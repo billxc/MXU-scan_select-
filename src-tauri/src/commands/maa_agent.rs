@@ -5,7 +5,7 @@
 use log::{debug, error, info, warn};
 use std::collections::HashMap;
 use std::fs::OpenOptions;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -45,6 +45,8 @@ pub(crate) struct AgentOutputBatcher {
     app: tauri::AppHandle,
     instance_id: String,
     state: Mutex<AgentOutputBatchState>,
+    /// 串行化「取出批次 + 发送」，保证 flush 返回时之前入队的输出均已发出
+    emit_lock: Mutex<()>,
 }
 
 impl AgentOutputBatcher {
@@ -59,6 +61,7 @@ impl AgentOutputBatcher {
                 flush_deadline: None,
                 flush_running: false,
             }),
+            emit_lock: Mutex::new(()),
         })
     }
 
@@ -107,6 +110,7 @@ impl AgentOutputBatcher {
                 continue;
             }
 
+            let _emit_guard = self.emit_lock.lock().unwrap();
             let payload = {
                 let mut state = self.state.lock().unwrap();
                 match state.flush_deadline {
@@ -160,6 +164,97 @@ impl AgentOutputBatcher {
         let mut state = self.state.lock().unwrap();
         state.flush_running = false;
     }
+
+    /// 立即发送已排队的输出，用于进程结束时保证输出先于后续日志到达前端
+    pub(crate) fn flush(&self) {
+        let _emit_guard = self.emit_lock.lock().unwrap();
+        let payload = {
+            let mut state = self.state.lock().unwrap();
+            if state.lines.is_empty() {
+                None
+            } else {
+                let merged_line = state.lines.join("\n");
+                state.lines.clear();
+                let stream = if state.has_mixed_streams {
+                    "mixed".to_string()
+                } else {
+                    state
+                        .first_stream
+                        .take()
+                        .unwrap_or_else(|| "stdout".to_string())
+                };
+                state.has_mixed_streams = false;
+                Some((stream, merged_line))
+            }
+        };
+        if let Some((stream, merged_line)) = payload {
+            emit_agent_output(&self.app, &self.instance_id, &stream, &merged_line);
+        }
+    }
+}
+
+/// 子进程输出日志文件（延迟创建：仅在有实际输出时才打开文件）
+pub(crate) struct ChildOutputLog {
+    path: PathBuf,
+    file: Mutex<Option<std::fs::File>>,
+}
+
+impl ChildOutputLog {
+    pub(crate) fn new(file_name: &str) -> Arc<Self> {
+        Arc::new(Self {
+            path: get_logs_dir().join(file_name),
+            file: Mutex::new(None),
+        })
+    }
+
+    fn write_line(&self, stream: &str, line: &str) {
+        if let Ok(mut guard) = self.file.lock() {
+            if guard.is_none() {
+                *guard = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&self.path)
+                    .ok();
+            }
+            if let Some(file) = guard.as_mut() {
+                let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
+                let _ = writeln!(file, "{} [{}] {}", timestamp, stream, line);
+            }
+        }
+    }
+}
+
+/// 在单独线程中按行读取子进程输出：写入日志文件、记录日志并发送到前端日志面板。
+/// Agent 与 pretask 共用。
+pub(crate) fn spawn_child_output_reader<R: Read + Send + 'static>(
+    source: R,
+    stream: &'static str,
+    log_tag: String,
+    log_file: Arc<ChildOutputLog>,
+    batcher: Arc<AgentOutputBatcher>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let mut reader = BufReader::new(source);
+        let mut buffer = Vec::new();
+        loop {
+            buffer.clear();
+            match reader.read_until(b'\n', &mut buffer) {
+                Ok(0) => break,
+                Ok(_) => {
+                    let line = String::from_utf8_lossy(&buffer);
+                    let clean_line = line.trim_end();
+                    log_file.write_line(stream, clean_line);
+                    if stream == "stderr" {
+                        warn!(target: "agent", "[{}][{}] {}", log_tag, stream, clean_line);
+                    } else {
+                        info!(target: "agent", "[{}][{}] {}", log_tag, stream, clean_line);
+                    }
+                    batcher.enqueue(stream, clean_line);
+                }
+                Err(_) => break,
+            }
+        }
+    })
 }
 
 /// 发送 Agent 输出事件（Tauri WebView + WebSocket 浏览器客户端）
@@ -404,83 +499,26 @@ async fn start_single_agent(
 
         // agent 日志文件路径（延迟创建：仅在有实际输出时才打开文件）
         let pid = child.id();
-        let log_filename = format!("mxu-agent-{}-{}.log", agent_index, pid);
-        let agent_log_path = Arc::new(get_logs_dir().join(&log_filename));
-        let log_file: Arc<Mutex<Option<std::fs::File>>> = Arc::new(Mutex::new(None));
+        let log_file = ChildOutputLog::new(&format!("mxu-agent-{}-{}.log", agent_index, pid));
         let output_batcher = AgentOutputBatcher::new(app.clone(), instance_id.clone());
 
-        // 在单独线程中读取 stdout
         if let Some(stdout) = child.stdout.take() {
-            let lf = log_file.clone();
-            let lf_path = agent_log_path.clone();
-            let batcher = output_batcher.clone();
-            thread::spawn(move || {
-                let mut reader = BufReader::new(stdout);
-                let mut buffer = Vec::new();
-                loop {
-                    buffer.clear();
-                    match reader.read_until(b'\n', &mut buffer) {
-                        Ok(0) => break,
-                        Ok(_) => {
-                            let line = String::from_utf8_lossy(&buffer);
-                            let clean_line = line.trim_end();
-                            if let Ok(mut guard) = lf.lock() {
-                                if guard.is_none() {
-                                    *guard = OpenOptions::new()
-                                        .create(true)
-                                        .append(true)
-                                        .open(lf_path.as_ref())
-                                        .ok();
-                                }
-                                if let Some(file) = guard.as_mut() {
-                                    let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
-                                    let _ = writeln!(file, "{} [stdout] {}", timestamp, clean_line);
-                                }
-                            }
-                            info!(target: "agent", "[agent#{}][stdout] {}", agent_index, clean_line);
-                            batcher.enqueue("stdout", clean_line);
-                        }
-                        Err(_) => break,
-                    }
-                }
-            });
+            spawn_child_output_reader(
+                stdout,
+                "stdout",
+                format!("agent#{}", agent_index),
+                log_file.clone(),
+                output_batcher.clone(),
+            );
         }
-
-        // Stderr thread
         if let Some(stderr) = child.stderr.take() {
-            let lf = log_file.clone();
-            let lf_path = agent_log_path.clone();
-            let batcher = output_batcher.clone();
-            thread::spawn(move || {
-                let mut reader = BufReader::new(stderr);
-                let mut buffer = Vec::new();
-                loop {
-                    buffer.clear();
-                    match reader.read_until(b'\n', &mut buffer) {
-                        Ok(0) => break,
-                        Ok(_) => {
-                            let line = String::from_utf8_lossy(&buffer);
-                            let clean_line = line.trim_end();
-                            if let Ok(mut guard) = lf.lock() {
-                                if guard.is_none() {
-                                    *guard = OpenOptions::new()
-                                        .create(true)
-                                        .append(true)
-                                        .open(lf_path.as_ref())
-                                        .ok();
-                                }
-                                if let Some(file) = guard.as_mut() {
-                                    let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
-                                    let _ = writeln!(file, "{} [stderr] {}", timestamp, clean_line);
-                                }
-                            }
-                            warn!(target: "agent", "[agent#{}][stderr] {}", agent_index, clean_line);
-                            batcher.enqueue("stderr", clean_line);
-                        }
-                        Err(_) => break,
-                    }
-                }
-            });
+            spawn_child_output_reader(
+                stderr,
+                "stderr",
+                format!("agent#{}", agent_index),
+                log_file.clone(),
+                output_batcher.clone(),
+            );
         }
 
         // 设置连接超时

@@ -19,6 +19,7 @@ import {
   resolveContent,
   markdownToHtmlWithLocalImages,
 } from '@/services/contentResolver';
+import { hasRichTextFeatures } from '@/utils/richText';
 import type { FocusTemplate, FocusDisplayChannel } from '@/types/interface';
 
 const log = loggers.app;
@@ -29,9 +30,36 @@ const AGENT_LOG_FLOOD_THRESHOLD = 15;
 // 每次会话只请求一次通知权限，避免多条 focus 消息重复弹权限弹窗
 let focusNotificationPermissionRequested = false;
 
-/** v2.3.0: toast/notification 渠道 - 使用系统通知 */
+/**
+ * 将富文本消息转为系统通知用纯文本。
+ * 通过 DOM 解析做 HTML 感知转换：字面尖括号文本按原样保留；
+ * `<br>` 与块级元素转换后追加换行，避免相邻内容粘连。
+ */
+function htmlToPlainText(html: string): string {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  doc.body.querySelectorAll('br').forEach((br) => br.replaceWith('\n'));
+  doc.body
+    .querySelectorAll('p, div, li, tr, h1, h2, h3, h4, h5, h6, blockquote, pre')
+    .forEach((el) => el.after('\n'));
+  return (doc.body.textContent ?? '')
+    .replace(/[ \t]*\n[ \t]*/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/**
+ * v2.3.0: toast/notification 渠道 - 使用系统通知。
+ * Tauri 桌面端经 Rust 侧 notify-rust 发送（WebView2 的 Web Notification API
+ * 权限恒为 denied 且无权限弹窗，直接调用会静默失效）；
+ * Web 端保留浏览器 Notification API。
+ */
 async function dispatchFocusNotification(message: string) {
   try {
+    if (isTauri()) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('send_system_notification', { title: 'MXU', body: htmlToPlainText(message) });
+      return;
+    }
     if (!('Notification' in window)) return;
     if (Notification.permission === 'granted') {
       new Notification('MXU', { body: message });
@@ -131,13 +159,8 @@ async function resolveFocusContent(
 
   // 5. 如果是直接文本，检查是否包含富文本特征
   if (contentType === 'text') {
-    // 检测是否包含 Markdown 语法、HTML 标签或 URL
-    const hasRichContent =
-      /[*_`#\[\]!]/.test(resolved) || // Markdown 语法
-      resolved.includes('\n') || // 多行内容
-      /<[a-z][\s\S]*?>/i.test(resolved) || // HTML 标签
-      /https?:\/\/\S+/.test(resolved); // URL
-    if (hasRichContent) {
+    // 判定规则集中在 utils/richText，避免各处各写一套正则
+    if (hasRichTextFeatures(resolved)) {
       const html = await markdownToHtmlWithLocalImages(resolved, basePath);
       return { message: resolved, html };
     }
@@ -353,7 +376,8 @@ function handleCallback(
 
     resolveFocusContent(focusTemplate, details, instanceId)
       .then((resolved) => {
-        // 根据 display 渠道分发消息
+        // 根据 display 渠道分发消息；toast 与 notification 同为系统通知，去重避免双发
+        let notificationDispatched = false;
         for (const channel of displayChannels) {
           switch (channel) {
             case 'log':
@@ -367,7 +391,10 @@ function handleCallback(
               break;
             case 'toast':
             case 'notification':
-              dispatchFocusNotification(resolved.message);
+              if (!notificationDispatched) {
+                notificationDispatched = true;
+                dispatchFocusNotification(resolved.message);
+              }
               break;
             case 'dialog':
             case 'modal':

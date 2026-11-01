@@ -16,6 +16,7 @@ import {
   ConnectionPanel,
 } from '@/components';
 import { BackgroundOverlay } from '@/components/BackgroundOverlay';
+import { isAllowedSettingsHotkey } from '@/components/FormControls';
 import type { BadPathType } from '@/components';
 import {
   autoLoadInterface,
@@ -31,7 +32,7 @@ import {
   stopInstanceTasksAndExitApp,
 } from '@/services';
 import type { ConfigRecoveryNotice } from '@/services';
-import { loadIconAsDataUrl } from '@/services/contentResolver';
+import { clearIconDataUrlCache, loadIconAsDataUrl } from '@/services/contentResolver';
 import * as wsService from '@/services/wsService';
 import {
   downloadUpdate,
@@ -39,6 +40,7 @@ import {
   consumeUpdateCompleteInfo,
   savePendingUpdateInfo,
   getPendingUpdateInfo,
+  hasInstallFailedInSession,
   clearPendingUpdateInfo,
   isDebugVersion,
 } from '@/services/updateService';
@@ -420,6 +422,11 @@ function App() {
     if (state.autoInstallPending) return;
     if (autoTaskLaunchPendingRef.current) return;
     if (state.instances.some((i) => i.isRunning)) return;
+    // 本次运行中安装失败过则不再自动重试，避免反复失败；手动安装和下次启动不受影响
+    if (hasInstallFailedInSession()) {
+      log.info('自动安装更新：本次运行中已安装失败过，跳过自动安装');
+      return;
+    }
 
     log.info('自动安装更新：条件满足，弹出安装');
     state.setAutoInstallPending(true);
@@ -596,6 +603,8 @@ function App() {
       log.info('加载 interface.json...');
       const result = await autoLoadInterface();
       setProjectInterface(result.interface);
+      // 资源目录可能被换掉：先失效图标 data URL 缓存，避免复用旧资源包的图标
+      clearIconDataUrlCache();
       setBasePath(result.basePath);
       setDataPath(result.dataPath);
       // 缓存后端真实 OS/架构，供控制器过滤、更新资产匹配、useCmd 开关等消费
@@ -1621,7 +1630,7 @@ function App() {
       const startKey = hotkeys?.startTasks || 'F10';
       const stopKey = hotkeys?.stopTasks || 'F11';
 
-      if (combo === startKey) {
+      if (isAllowedSettingsHotkey(startKey) && combo === startKey) {
         e.preventDefault();
         document.dispatchEvent(
           new CustomEvent('mxu-start-tasks', { detail: { source: 'hotkey', combo } }),
@@ -1629,7 +1638,7 @@ function App() {
         return;
       }
 
-      if (combo === stopKey) {
+      if (isAllowedSettingsHotkey(stopKey) && combo === stopKey) {
         e.preventDefault();
         document.dispatchEvent(
           new CustomEvent('mxu-stop-tasks', { detail: { source: 'hotkey', combo } }),
@@ -1660,30 +1669,39 @@ function App() {
 
     const startKey = hotkeys.startTasks || 'F10';
     const stopKey = hotkeys.stopTasks || 'F11';
+    const startAllowed = isAllowedSettingsHotkey(startKey);
+    const stopAllowed = stopKey !== startKey && isAllowedSettingsHotkey(stopKey);
 
     // Ctrl -> CommandOrControl
     const toTauriKey = (k: string) => k.replace(/^Ctrl\+/i, 'CommandOrControl+');
+
+    if (!startAllowed && !stopAllowed) {
+      setGlobalHotkeyError(null);
+      return;
+    }
 
     const GLOBAL_HOTKEY_THROTTLE_MS = 1000;
     let lastStartTime = 0;
     const registerKeys = async () => {
       // 记录正在注册的按键，失败时用于告知用户具体是哪个组合键
-      let registeringKey = startKey;
+      let registeringKey = startAllowed ? startKey : stopKey;
       try {
         const { register } = await getGlobalShortcut();
-        await register(toTauriKey(startKey), () => {
-          const now = Date.now();
-          if (now - lastStartTime < GLOBAL_HOTKEY_THROTTLE_MS) return;
-          lastStartTime = now;
-          document.dispatchEvent(
-            new CustomEvent('mxu-start-tasks', {
-              detail: { source: 'global-hotkey', combo: startKey },
-            }),
-          );
-        });
-        registeringKey = stopKey;
-        // 避免重复注册相同的键
-        if (stopKey !== startKey) {
+        if (startAllowed) {
+          registeringKey = startKey;
+          await register(toTauriKey(startKey), () => {
+            const now = Date.now();
+            if (now - lastStartTime < GLOBAL_HOTKEY_THROTTLE_MS) return;
+            lastStartTime = now;
+            document.dispatchEvent(
+              new CustomEvent('mxu-start-tasks', {
+                detail: { source: 'global-hotkey', combo: startKey },
+              }),
+            );
+          });
+        }
+        if (stopAllowed) {
+          registeringKey = stopKey;
           await register(toTauriKey(stopKey), () => {
             document.dispatchEvent(
               new CustomEvent('mxu-stop-tasks', {
@@ -1692,7 +1710,11 @@ function App() {
             );
           });
         }
-        log.info('全局快捷键已注册:', startKey, stopKey);
+        log.info(
+          '全局快捷键已注册:',
+          startAllowed ? startKey : '(skipped)',
+          stopAllowed ? stopKey : '(skipped)',
+        );
         setGlobalHotkeyError(null);
       } catch (err) {
         log.error('注册全局快捷键失败:', err);

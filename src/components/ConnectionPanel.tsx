@@ -24,7 +24,8 @@ import { LinuxInputMethod, parseLinuxInputMethod } from '@/types/maa';
 import type { AdbDevice, Win32Window, GamescopeInstance, ControllerConfig } from '@/types/maa';
 import type { ControllerItem, ResourceItem } from '@/types/interface';
 import { computeResourcePaths } from '@/utils/resourcePath';
-import { getProcessNameFromPath } from '@/utils/paths';
+import { buildPlayCoverControllerConfig } from '@/utils/playCoverController';
+import { hasValidUinputDimensions, parseUinputDimension } from '@/utils/linuxUinput';
 import {
   buildDesktopWindowControllerConfig,
   buildLinuxControllerConfig,
@@ -35,21 +36,12 @@ import {
   isDesktopWindowControllerType,
 } from '@/utils/controller';
 import { getInterfaceLangKey } from '@/i18n';
-import { generateId } from '@/stores/helpers';
 import {
   startGlobalCallbackListener,
   waitForCtrlResult,
   waitForResResult,
   autoReconnectAttempted,
 } from './connection';
-
-/** 将 uinput 尺寸输入字符串解析为正整数；空串或非法输入返回 undefined */
-function parseUinputDimension(value: string): number | undefined {
-  const trimmed = value.trim();
-  if (!trimmed) return undefined;
-  const n = Number.parseInt(trimmed, 10);
-  return Number.isFinite(n) && n > 0 ? n : undefined;
-}
 
 export function ConnectionPanel() {
   const { t } = useTranslation();
@@ -83,7 +75,6 @@ export function ConnectionPanel() {
     registerResIdName,
     registerResBatch,
     addLog,
-    addPreAction,
   } = useAppStore();
 
   // 获取当前活动实例
@@ -685,12 +676,11 @@ export function ConnectionPanel() {
       } else if (controllerType === 'PlayCover') {
         // 保存 PlayCover 地址到实例配置
         setInstanceSavedDevice(instanceId, { playcoverAddress });
-        config = {
-          type: 'PlayCover',
-          address: playcoverAddress,
-          uuid: currentController?.playcover?.uuid || 'maa.playcover',
-          display_short_side: currentController?.display_short_side,
-        };
+        config = buildPlayCoverControllerConfig(
+          playcoverAddress,
+          currentController?.playcover?.uuid,
+          currentController?.display_short_side,
+        );
         deviceName = playcoverAddress;
         targetType = 'device';
       } else {
@@ -934,7 +924,7 @@ export function ConnectionPanel() {
     }
   };
 
-  // 连接成功后尝试获取窗口进程路径，自动添加前置程序
+  // 连接成功后尝试获取窗口进程路径，供手动添加前置程序时作为默认值
   const fetchAndStoreProcessPath = async (hwnd: number) => {
     try {
       const programPath = await maaService.getProcessPathFromHwnd(hwnd);
@@ -945,30 +935,6 @@ export function ConnectionPanel() {
         ...inst?.savedDevice,
         connectedProgramPath: programPath,
       });
-
-      const processName = getProcessNameFromPath(programPath);
-
-      // 自动添加禁用的前置程序（启动进程），dedup 在 store 内原子检查
-      const added = addPreAction(
-        instanceId,
-        {
-          id: generateId(),
-          customName: t('action.autoPreActionName', { name: processName }),
-          enabled: false,
-          program: programPath,
-          args: '',
-          waitForExit: false,
-          skipIfRunning: true,
-          useCmd: false,
-        },
-        { field: 'program', value: programPath },
-      );
-      if (added) {
-        addLog(instanceId, {
-          type: 'info',
-          message: t('action.autoPreActionAdded', { name: processName }),
-        });
-      }
     } catch {
       // best-effort, 静默忽略
     }
@@ -1067,6 +1033,14 @@ export function ConnectionPanel() {
   // Linux：判断给定选择是否满足当前配置所需的全部设备
   const isLinuxReadyWith = (instance: GamescopeInstance | null, wlr: string | null) => {
     if (!linuxNeeds) return false;
+    if (
+      isUinputInput &&
+      !hasValidUinputDimensions(
+        parseUinputDimension(uinputScreenWidth),
+        parseUinputDimension(uinputScreenHeight),
+      )
+    )
+      return false;
     if (linuxNeeds.needGamescopeNode || linuxNeeds.needEisSocket) {
       if (!instance) return false;
       if (linuxNeeds.needGamescopeNode && instance.pipewire_node_id === 0) return false;
@@ -1082,6 +1056,21 @@ export function ConnectionPanel() {
     setDeviceError(null);
 
     try {
+      const parsedWidth = parseUinputDimension(uinputScreenWidth);
+      const parsedHeight = parseUinputDimension(uinputScreenHeight);
+
+      const config = buildLinuxControllerConfig(
+        currentController,
+        {
+          wlrSocketPath: wlr ?? undefined,
+          pwNodeId: instance?.pipewire_node_id,
+          eisSocketPath: instance?.eis_socket_path || undefined,
+          uinputScreenWidth: parsedWidth,
+          uinputScreenHeight: parsedHeight,
+        },
+        t('controller.uinputDimensionsRequired'),
+      );
+
       if (isConnected) {
         await maaService.destroyInstance(instanceId).catch(() => {});
         setIsConnected(false);
@@ -1094,17 +1083,6 @@ export function ConnectionPanel() {
       }
 
       await maaService.createInstance(instanceId).catch(() => {});
-
-      const parsedWidth = parseUinputDimension(uinputScreenWidth);
-      const parsedHeight = parseUinputDimension(uinputScreenHeight);
-
-      const config = buildLinuxControllerConfig(currentController, {
-        wlrSocketPath: wlr ?? undefined,
-        pwNodeId: instance?.pipewire_node_id,
-        eisSocketPath: instance?.eis_socket_path || undefined,
-        uinputScreenWidth: parsedWidth,
-        uinputScreenHeight: parsedHeight,
-      });
 
       saveLinuxDeviceInfo({
         uinputScreenWidth: parsedWidth,
@@ -1641,7 +1619,12 @@ export function ConnectionPanel() {
                   type="number"
                   min={1}
                   value={uinputScreenWidth}
-                  onChange={(e) => setUinputScreenWidth(e.target.value)}
+                  onChange={(e) => {
+                    setUinputScreenWidth(e.target.value);
+                    saveLinuxDeviceInfo({
+                      uinputScreenWidth: parseUinputDimension(e.target.value),
+                    });
+                  }}
                   placeholder={t('controller.uinputWidth')}
                   disabled={isConnected || isConnecting || isRunning}
                   className={clsx(
@@ -1655,7 +1638,12 @@ export function ConnectionPanel() {
                   type="number"
                   min={1}
                   value={uinputScreenHeight}
-                  onChange={(e) => setUinputScreenHeight(e.target.value)}
+                  onChange={(e) => {
+                    setUinputScreenHeight(e.target.value);
+                    saveLinuxDeviceInfo({
+                      uinputScreenHeight: parseUinputDimension(e.target.value),
+                    });
+                  }}
                   placeholder={t('controller.uinputHeight')}
                   disabled={isConnected || isConnecting || isRunning}
                   className={clsx(
@@ -1749,7 +1737,7 @@ export function ConnectionPanel() {
                   {showDeviceDropdown && deviceDropdownPos && (
                     <div
                       ref={deviceMenuRef}
-                      className="fixed z-[100] bg-bg-secondary border border-border rounded-lg shadow-lg max-h-48 overflow-y-auto"
+                      className="mxu-overlay-surface fixed z-[100] bg-bg-secondary border border-border rounded-lg shadow-lg max-h-48 overflow-y-auto"
                       style={{
                         top: deviceDropdownPos.top,
                         left: deviceDropdownPos.left,
@@ -1914,7 +1902,7 @@ export function ConnectionPanel() {
               {showResourceDropdown && resourceDropdownPos && (
                 <div
                   ref={resourceMenuRef}
-                  className="fixed z-[100] bg-bg-secondary border border-border rounded-lg shadow-lg max-h-48 overflow-y-auto"
+                  className="mxu-overlay-surface fixed z-[100] bg-bg-secondary border border-border rounded-lg shadow-lg max-h-48 overflow-y-auto"
                   style={{
                     bottom: window.innerHeight - resourceDropdownPos.top + 4,
                     left: resourceDropdownPos.left,

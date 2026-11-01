@@ -67,8 +67,9 @@ function PresetCard({ preset, onApply }: { preset: PresetItem; onApply: () => vo
     translations,
   );
 
-  const enabledCount = preset.task.filter((t) => t.enabled !== false).length;
-  const totalCount = preset.task.length;
+  const presetTasks = preset.task ?? [];
+  const enabledCount = presetTasks.filter((t) => t.enabled !== false).length;
+  const totalCount = presetTasks.length;
 
   return (
     <button

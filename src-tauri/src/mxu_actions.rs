@@ -506,9 +506,12 @@ fn mxu_killproc_action_impl(
     if kill_self {
         info!("[MXU_KILLPROC] Requesting graceful self-stop");
 
+        // 控制器已断开（如前序任务关闭了游戏）时 PostStop 投递停止任务会失败，
+        // 但停止标志已置位，前端的停止流程也能兜底，因此不阻断退出。
         if !request_tasker_stop(ctx) {
-            warn!("[MXU_KILLPROC] Failed to request tasker stop for self-stop mode");
-            return false;
+            warn!(
+                "[MXU_KILLPROC] MaaTaskerPostStop failed (controller may be disconnected), continue self-stop"
+            );
         }
 
         return match (app_handle, instance_id) {
@@ -605,7 +608,7 @@ fn kill_process_by_name(name: &str) -> bool {
 const MXU_POWER_ACTION: &str = "MXU_POWER_ACTION";
 
 /// MXU_POWER custom action 回调函数
-/// 从 custom_action_param 中读取 power_action，执行关机/重启/息屏/睡眠/静音/取消静音操作
+/// 从 custom_action_param 中读取 power_action，执行关机/重启/息屏/睡眠/休眠/静音/取消静音操作
 fn mxu_power_action_fn(
     _ctx: &maa_framework::context::Context,
     args: &maa_framework::custom::ActionArgs,
@@ -633,6 +636,7 @@ fn mxu_power_action_fn(
         "restart" => execute_power_restart(),
         "screenoff" => execute_power_screenoff(),
         "sleep" => execute_power_sleep(),
+        "hibernate" => execute_power_hibernate(),
         "mute" => execute_power_set_mute(true),
         "unmute" => execute_power_set_mute(false),
         _ => {
@@ -815,8 +819,14 @@ fn execute_power_sleep() -> bool {
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        match Command::new("rundll32.exe")
-            .args(["powrprof.dll,SetSuspendState", "0,1,0"])
+        match Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Application]::SetSuspendState('Suspend', $false, $false)",
+            ])
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
         {
@@ -854,6 +864,65 @@ fn execute_power_sleep() -> bool {
             }
             Err(e) => {
                 log::error!("[MXU_POWER] Sleep failed: {}", e);
+                false
+            }
+        }
+    }
+}
+
+fn execute_power_hibernate() -> bool {
+    use std::process::Command;
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        match Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Application]::SetSuspendState('Hibernate', $false, $false)",
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+        {
+            Ok(_) => {
+                info!("[MXU_POWER] Hibernate command issued");
+                true
+            }
+            Err(e) => {
+                log::error!("[MXU_POWER] Hibernate failed: {}", e);
+                false
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // macOS 无独立休眠命令，休眠模式由 hibernatemode 决定，此处与睡眠一致
+        match Command::new("pmset").arg("sleepnow").spawn() {
+            Ok(_) => {
+                info!("[MXU_POWER] Hibernate command issued");
+                true
+            }
+            Err(e) => {
+                log::error!("[MXU_POWER] Hibernate failed: {}", e);
+                false
+            }
+        }
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        match Command::new("systemctl").arg("hibernate").spawn() {
+            Ok(_) => {
+                info!("[MXU_POWER] Hibernate command issued");
+                true
+            }
+            Err(e) => {
+                log::error!("[MXU_POWER] Hibernate failed: {}", e);
                 false
             }
         }

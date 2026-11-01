@@ -100,6 +100,7 @@ export default {
     hotkeysHint:
       '僅在主畫面中生效，用於開始 / 結束當前執行個體的任務。支援組合鍵（例如 Ctrl+F10、Ctrl+Shift+F11），純 F5/F12 仍保留給系統 / 瀏覽器快捷鍵。',
     hotkeysConflict: '開始與結束快捷鍵不應相同，請選擇不同的按鍵',
+    hotkeysModifierRequired: '單獨按鍵僅支援 F1–F24，請再加一個修飾鍵（如 Ctrl、Alt、Shift）',
     hotkeysGlobal: '全域快捷鍵',
     hotkeysGlobalHint: '開啟後視窗失焦時也能使用快捷鍵',
     hotkeysGlobalOnlyStart: '全域模式下僅開始生效',
@@ -203,6 +204,7 @@ export default {
       restart: '重新啟動',
       screenoff: '關閉螢幕',
       sleep: '睡眠',
+      hibernate: '休眠',
       mute: '靜音',
       unmute: '取消靜音',
     },
@@ -251,7 +253,6 @@ export default {
       alreadyRunning: '任務已在執行或正在執行前置動作',
       taskNotFound: '指定的任務不存在或已被刪除',
       noRunnableTasks: '沒有可執行的任務，請檢查任務定義與入口設定',
-      primaryTasksIncomplete: '前段任務未正常結束，已略過收尾特殊任務',
       workstationLocked: '偵測到電腦處於鎖定畫面狀態，請先解鎖後再執行任務',
       agentStartParams: 'Agent #{{index}} 啟動參數: {{cmd}}  (工作目錄: {{cwd}})',
       agentSpawnHintFileNotFound: '請先檢查 Agent 是否被防毒軟體攔截，確認無誤後重新覆蓋安裝。',
@@ -350,8 +351,6 @@ export default {
     pretaskExitCode: '預任務結束碼: {{code}}',
     pretaskFailed: '預任務執行失敗: {{error}}',
     preActionConnectDelay: '等待 {{seconds}} 秒後連線...',
-    autoPreActionName: '▶️ 啟動 {{name}}',
-    autoPreActionAdded: '已自動新增前置程式: {{name}}（預設未啟用）',
     removeConfirmTitle: '刪除前置程式',
     removeConfirmMessage: '確定要刪除這個前置程式嗎？',
   },
@@ -410,6 +409,7 @@ export default {
     portal: 'Portal',
     uinputWidth: '寬 (px)',
     uinputHeight: '高 (px)',
+    uinputDimensionsRequired: '請先填寫有效的 UInput 螢幕寬度和高度（正整數）',
     playcover: 'PlayCover (macOS)',
     macos: 'macOS 視窗',
     macosPermissionsRequired:
@@ -517,7 +517,6 @@ export default {
       stopTask: '停止任務',
       // 定時任務訊息
       scheduleStarting: '定時執行開始 [{{policy}}] {{time}}',
-      scheduleCompensating: '定時補償執行 [{{policy}}] {{time}}（睡眠/恢復後補觸發）',
       // Agent 訊息
       agentStarting: 'Agent 正在啟動...',
       agentStarted: 'Agent 已啟動',
@@ -533,6 +532,7 @@ export default {
       hotkeyActionStop: '停止任務',
       hotkeyStartSuccess: '透過快捷鍵開始任務：',
       hotkeyStopSuccess: '透過快捷鍵停止任務',
+      hotkeyStopPending: '已傳送停止請求，但任務仍在等待目前操作結束。',
       hotkeyStopFailed: '無法透過快捷鍵停止任務',
     },
   },
@@ -595,16 +595,20 @@ export default {
     saveDrawHint: '儲存識別和操作的除錯圖像到日誌目錄（重啟軟體後自動關閉）',
     tcpCompatMode: '通訊相容模式',
     tcpCompatModeHint: '若啟動任務後軟體立即閃退，可嘗試開啟。僅限此情況使用，否則會影響運行效率',
-    webServerEnabled: '啟用 Web 服務',
-    webServerEnabledHint: '關閉後內建 Web 伺服器將不會啟動（重啟生效）',
-    webServerPort: 'Web 服務連接埠',
-    webServerPortHint: '自訂 Web 伺服器監聽連接埠（預設 12701，重啟生效）',
+  },
+
+  webserver: {
+    address: 'Web 服務地址',
+    title: 'Web 服務',
+    enabled: '啟用 Web 服務',
+    enabledHint: '關閉後內建 Web 伺服器將不會啟動（重啟生效）',
+    port: 'Web 服務連接埠',
+    portHint: '自訂 Web 伺服器監聽連接埠（預設 12701，重啟生效）',
     allowLanAccess: '允許區域網路存取',
     allowLanAccessHint: '啟用後 Web UI 將監聽 0.0.0.0，允許區域網路內其他裝置存取',
-    webServerRestartMessage: '變更 Web 服務設定需要重啟才能生效，是否立即重啟？',
+    restartMessage: '變更 Web 服務設定需要重啟才能生效，是否立即重啟？',
     restartLater: '稍後重啟',
     restartNow: '立即重啟',
-    webServerAddress: 'Web 服務地址',
   },
 
   // 設定自我修復提示
@@ -723,6 +727,14 @@ export default {
     installing: '正在安裝更新...',
     installComplete: '安裝完成',
     installFailed: '安裝失敗',
+    installErrors: {
+      packageMissing: '更新包不存在，請重新下載',
+      packageCorrupt: '更新包已損毀，請重新下載（{{detail}}）',
+      extractFailed: '解壓縮更新包失敗，可能遭安全軟體攔截（{{detail}}）',
+      rolledBack: '更新失敗，已還原至更新前的版本（{{detail}}）',
+      exeMissing:
+        '程式檔案已遺失，可能遭安全軟體刪除或隔離。請將安裝目錄加入安全軟體白名單後重新下載更新',
+    },
     installNow: '立即安裝',
     installUpdate: '安裝更新',
     installStages: {

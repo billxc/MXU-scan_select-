@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import {
   ArrowLeft,
   Paintbrush,
-  Key,
+  Keyboard,
   Settings2,
   Download,
   Bug,
@@ -12,6 +12,7 @@ import {
   X,
   LayoutGrid,
   ChevronRight,
+  Globe,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useIsMobile } from '@/hooks/useIsMobile';
@@ -31,11 +32,14 @@ import {
   DebugSection,
   AboutSection,
   CustomAccentModal,
+  WebServerSection,
 } from './settings';
 
 interface SettingsPageProps {
   onClose?: () => void;
 }
+
+const SECTION_SCROLL_OFFSET = 16;
 
 interface RenderSettingsSection extends InterfaceSettingSection {
   resolvedLabel: string;
@@ -266,7 +270,8 @@ export function SettingsPage({ onClose }: SettingsPageProps) {
       items.push({ id: 'task-settings', icon: LayoutGrid, labelKey: 'settings.taskSettings' });
     }
     items.push({ id: 'general', icon: Settings2, labelKey: 'settings.general' });
-    items.push({ id: 'hotkeys', icon: Key, labelKey: 'settings.hotkeys' });
+    items.push({ id: 'hotkeys', icon: Keyboard, labelKey: 'settings.hotkeys' });
+    items.push({ id: 'webserver', icon: Globe, labelKey: 'webserver.title' });
     if (projectInterface?.mirrorchyan_rid) {
       items.push({ id: 'update', icon: Download, labelKey: 'mirrorChyan.title' });
     }
@@ -287,14 +292,31 @@ export function SettingsPage({ onClose }: SettingsPageProps) {
     if (!isMobile) setDrawerOpen(false);
   }, [isMobile]);
 
+  // 为最后一个分区保留足够的滚动空间，并随容器尺寸变化更新。
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    const updateScrollHeight = () => {
+      container.style.setProperty('--settings-scroll-height', `${container.clientHeight}px`);
+    };
+    updateScrollHeight();
+
+    const observer = new ResizeObserver(updateScrollHeight);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
+
   // 滚动到指定 section
   const scrollToSection = useCallback((sectionId: string) => {
     const element = document.getElementById(`section-${sectionId}`);
     if (element && scrollContainerRef.current) {
       const container = scrollContainerRef.current;
+      // 尺寸变化后的观察器回调可能尚未执行，定位前同步补足滚动空间。
+      container.style.setProperty('--settings-scroll-height', `${container.clientHeight}px`);
       const elementTop = element.offsetTop - container.offsetTop;
       container.scrollTo({
-        top: elementTop - 16,
+        top: elementTop - SECTION_SCROLL_OFFSET,
         behavior: 'smooth',
       });
     }
@@ -412,7 +434,7 @@ export function SettingsPage({ onClose }: SettingsPageProps) {
             {/* 滑入面板 */}
             <nav
               className={clsx(
-                'absolute left-0 top-0 bottom-0 z-50 w-48 bg-bg-secondary border-r border-border p-4 space-y-1',
+                'mxu-overlay-surface absolute left-0 top-0 bottom-0 z-50 w-48 bg-bg-secondary border-r border-border p-4 space-y-1',
                 'transform transition-transform duration-200 ease-out',
                 drawerOpen ? 'translate-x-0' : '-translate-x-full',
               )}
@@ -490,6 +512,9 @@ export function SettingsPage({ onClose }: SettingsPageProps) {
             {/* 快捷键设置 */}
             <HotkeySection />
 
+            {/* Web 服务设置 */}
+            <WebServerSection />
+
             {/* MirrorChyan 更新设置 */}
             <UpdateSection />
 
@@ -497,7 +522,14 @@ export function SettingsPage({ onClose }: SettingsPageProps) {
             <DebugSection />
 
             {/* 关于 */}
-            <AboutSection />
+            <div
+              style={{
+                // 扣除内容容器 p-6 的底部内边距和滚动定位时的顶部留白。
+                minHeight: `calc(var(--settings-scroll-height, 0px) - 1.5rem - ${SECTION_SCROLL_OFFSET}px)`,
+              }}
+            >
+              <AboutSection />
+            </div>
           </div>
         </div>
       </div>
@@ -528,7 +560,7 @@ export function SettingsPage({ onClose }: SettingsPageProps) {
       {/* Undo 删除提示 */}
       {undoDeletedAccent && (
         <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-50">
-          <div className="flex items-center gap-3 px-4 py-3 rounded-xl border border-border bg-bg-secondary shadow-2xl">
+          <div className="mxu-overlay-surface flex items-center gap-3 px-4 py-3 rounded-xl border border-border bg-bg-secondary shadow-2xl">
             <span className="text-sm text-text-secondary">
               {t('settings.customAccentDeleted', { name: undoDeletedAccent.name })}
             </span>

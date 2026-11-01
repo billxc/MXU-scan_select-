@@ -101,6 +101,8 @@ export default {
     hotkeysHint:
       'Effective only on the main screen, used to start/stop tasks of the current instance. Modifier combinations are supported (e.g. Ctrl+F10, Ctrl+Shift+F11); plain F5/F12 remain reserved by the system/browser.',
     hotkeysConflict: 'Start and stop hotkeys should not be the same. Please choose different keys.',
+    hotkeysModifierRequired:
+      'A single key must be F1–F24. Add a modifier such as Ctrl, Alt, or Shift.',
     hotkeysGlobal: 'Global hotkeys',
     hotkeysGlobalHint: 'Enable hotkeys when window is not focused',
     hotkeysGlobalOnlyStart: 'only start works in global mode',
@@ -212,6 +214,7 @@ export default {
       restart: 'Restart',
       screenoff: 'Turn Off Screen',
       sleep: 'Sleep',
+      hibernate: 'Hibernate',
       mute: 'Mute',
       unmute: 'Unmute',
     },
@@ -264,7 +267,6 @@ export default {
       alreadyRunning: 'Tasks are already running or a pre-action is still in progress',
       taskNotFound: 'The specified task does not exist or has been deleted',
       noRunnableTasks: 'No runnable tasks; check the task definitions and entry configuration',
-      primaryTasksIncomplete: 'Primary tasks did not finish normally; trailing tasks were skipped',
       workstationLocked: 'The computer is locked. Please unlock it before running tasks.',
       agentStartParams: 'Agent #{{index}} start params: {{cmd}}  (cwd: {{cwd}})',
       agentSpawnHintFileNotFound:
@@ -366,8 +368,6 @@ export default {
     pretaskExitCode: 'Pre-task exit code: {{code}}',
     pretaskFailed: 'Pre-task failed: {{error}}',
     preActionConnectDelay: 'Waiting {{seconds}} seconds before connecting...',
-    autoPreActionName: '▶️ Launch {{name}}',
-    autoPreActionAdded: 'Auto-added pre-action: {{name}} (disabled by default)',
     removeConfirmTitle: 'Delete pre-action',
     removeConfirmMessage: 'Are you sure you want to delete this pre-action?',
   },
@@ -427,6 +427,8 @@ export default {
     portal: 'Portal',
     uinputWidth: 'Width (px)',
     uinputHeight: 'Height (px)',
+    uinputDimensionsRequired:
+      'Enter valid UInput screen width and height (positive integers) first.',
     playcover: 'PlayCover (macOS)',
     macos: 'macOS Window',
     macosPermissionsRequired:
@@ -538,8 +540,6 @@ export default {
       stopTask: 'Stop Task',
       // Schedule messages
       scheduleStarting: 'Scheduled execution started [{{policy}}] {{time}}',
-      scheduleCompensating:
-        'Compensated scheduled execution [{{policy}}] {{time}} (triggered after sleep/wake)',
       // Agent messages
       agentStarting: 'Agent starting...',
       agentStarted: 'Agent started',
@@ -555,6 +555,8 @@ export default {
       hotkeyActionStop: 'Stop tasks',
       hotkeyStartSuccess: 'Started tasks via hotkey:',
       hotkeyStopSuccess: 'Stopped tasks via hotkey',
+      hotkeyStopPending:
+        'The stop request was sent, but the task is still waiting for the current operation to exit.',
       hotkeyStopFailed: 'Failed to stop tasks via hotkey',
     },
   },
@@ -619,19 +621,21 @@ export default {
     tcpCompatMode: 'Communication Compat Mode',
     tcpCompatModeHint:
       'Try enabling this if the app crashes immediately after starting tasks. Only use in this case, as it may reduce performance',
-    webServerEnabled: 'Enable Web Server',
-    webServerEnabledHint:
-      'When disabled, the built-in web server will not start (restart required)',
-    webServerPort: 'Web Server Port',
-    webServerPortHint: 'Custom Web server listening port (default 12701, restart required)',
+  },
+
+  webserver: {
+    title: 'Web Server',
+    enabled: 'Enable Web Server',
+    enabledHint: 'When disabled, the built-in web server will not start (restart required)',
+    port: 'Web Server Port',
+    portHint: 'Custom Web server listening port (default 12701, restart required)',
     allowLanAccess: 'Allow LAN Access',
     allowLanAccessHint:
       'When enabled, Web UI listens on 0.0.0.0, allowing other devices on the local network to access it',
-    webServerRestartMessage:
-      'Changing Web server settings requires a restart to take effect. Restart now?',
+    restartMessage: 'Changing Web server settings requires a restart to take effect. Restart now?',
     restartLater: 'Later',
     restartNow: 'Restart Now',
-    webServerAddress: 'Web Server Address',
+    address: 'Web Server Address',
   },
 
   // Config self-heal notices
@@ -754,6 +758,15 @@ export default {
     installing: 'Installing update...',
     installComplete: 'Installation Complete',
     installFailed: 'Installation Failed',
+    installErrors: {
+      packageMissing: 'Update package not found. Please download it again.',
+      packageCorrupt: 'The update package is corrupted. Please download it again. ({{detail}})',
+      extractFailed:
+        'Failed to extract the update package. It may have been blocked by security software. ({{detail}})',
+      rolledBack: 'Update failed. The previous version has been restored. ({{detail}})',
+      exeMissing:
+        'The program file is missing. It may have been deleted or quarantined by security software. Add the installation folder to the security software allowlist, then download the update again.',
+    },
     installNow: 'Install Now',
     installUpdate: 'Install Update',
     installStages: {

@@ -101,6 +101,7 @@ export default {
     hotkeysHint:
       '仅在主界面中生效，用于开始 / 结束当前实例的任务。支持组合键（如 Ctrl+F10、Ctrl+Shift+F11），纯 F5/F12 仍保留为系统/浏览器快捷键。',
     hotkeysConflict: '开始和结束快捷键不应相同，请选择不同的按键',
+    hotkeysModifierRequired: '单独按键仅支持 F1–F24，请再加一个修饰键（如 Ctrl、Alt、Shift）',
     hotkeysGlobal: '全局快捷键',
     hotkeysGlobalHint: '开启后窗口失焦时也能使用快捷键',
     hotkeysGlobalOnlyStart: '全局模式下仅开始生效',
@@ -203,6 +204,7 @@ export default {
       restart: '重启',
       screenoff: '息屏',
       sleep: '睡眠',
+      hibernate: '休眠',
       mute: '静音',
       unmute: '解除静音',
     },
@@ -255,7 +257,6 @@ export default {
       alreadyRunning: '任务已在运行或正在执行前置动作',
       taskNotFound: '指定的任务不存在或已被删除',
       noRunnableTasks: '没有可执行的任务，请检查任务定义和入口配置',
-      primaryTasksIncomplete: '前段任务未正常结束，已跳过收尾特殊任务',
       workstationLocked: '检测到电脑处于锁屏状态，请先解锁后再运行任务',
       agentStartParams: 'Agent #{{index}} 启动参数: {{cmd}}  (工作目录: {{cwd}})',
       agentSpawnHintFileNotFound: '请先检查 Agent 是否被杀软拦截，确认无误后重新覆盖安装。',
@@ -354,8 +355,6 @@ export default {
     pretaskExitCode: '预任务退出码: {{code}}',
     pretaskFailed: '预任务执行失败: {{error}}',
     preActionConnectDelay: '等待 {{seconds}} 秒后连接...',
-    autoPreActionName: '▶️ 启动 {{name}}',
-    autoPreActionAdded: '已自动添加前置程序: {{name}}（默认未启用）',
     removeConfirmTitle: '删除前置程序',
     removeConfirmMessage: '确定要删除这个前置程序吗？',
   },
@@ -414,6 +413,7 @@ export default {
     portal: 'Portal',
     uinputWidth: '宽 (px)',
     uinputHeight: '高 (px)',
+    uinputDimensionsRequired: '请先填写有效的 UInput 屏幕宽度和高度（正整数）',
     playcover: 'PlayCover (macOS)',
     macos: 'macOS 窗口',
     macosPermissionsRequired:
@@ -521,7 +521,6 @@ export default {
       stopTask: '停止任务',
       // 定时任务消息
       scheduleStarting: '定时执行开始 [{{policy}}] {{time}}',
-      scheduleCompensating: '定时补偿执行 [{{policy}}] {{time}}（睡眠/恢复后补触发）',
       // Agent 消息
       agentStarting: 'Agent 正在启动...',
       agentStarted: 'Agent 已启动',
@@ -537,6 +536,7 @@ export default {
       hotkeyActionStop: '停止任务',
       hotkeyStartSuccess: '已通过快捷键开始任务：',
       hotkeyStopSuccess: '已通过快捷键停止任务',
+      hotkeyStopPending: '停止请求已发送，但任务仍在等待当前操作退出。',
       hotkeyStopFailed: '未能通过快捷键停止任务',
     },
   },
@@ -599,16 +599,20 @@ export default {
     saveDrawHint: '保存识别和操作的调试图像到日志目录（重启软件后自动关闭）',
     tcpCompatMode: '通信兼容模式',
     tcpCompatModeHint: '若启动任务后软件立即闪退，可尝试开启。仅限此情况使用，否则会影响运行效率',
-    webServerEnabled: '启用 Web 服务',
-    webServerEnabledHint: '关闭后内置 Web 服务器将不会启动（重启生效）',
-    webServerPort: 'Web 服务端口',
-    webServerPortHint: '自定义 Web 服务器监听端口（默认 12701，重启生效）',
+  },
+
+  webserver: {
+    address: 'Web 服务地址',
+    title: 'Web 服务',
+    enabled: '启用 Web 服务',
+    enabledHint: '关闭后内置 Web 服务器将不会启动（重启生效）',
+    port: 'Web 服务端口',
+    portHint: '自定义 Web 服务器监听端口（默认 12701，重启生效）',
     allowLanAccess: '允许局域网访问',
     allowLanAccessHint: '启用后 Web UI 将监听 0.0.0.0，允许局域网内其他设备访问',
-    webServerRestartMessage: '更改 Web 服务设置需要重启才能生效，是否立即重启？',
+    restartMessage: '更改 Web 服务设置需要重启才能生效，是否立即重启？',
     restartLater: '稍后重启',
     restartNow: '立即重启',
-    webServerAddress: 'Web 服务地址',
   },
 
   // 配置自愈提示
@@ -727,6 +731,14 @@ export default {
     installing: '正在安装更新...',
     installComplete: '安装完成',
     installFailed: '安装失败',
+    installErrors: {
+      packageMissing: '更新包不存在，请重新下载',
+      packageCorrupt: '更新包已损坏，请重新下载（{{detail}}）',
+      extractFailed: '解压更新包失败，可能被安全软件拦截（{{detail}}）',
+      rolledBack: '更新失败，已恢复到更新前的版本（{{detail}}）',
+      exeMissing:
+        '程序文件已丢失，可能被安全软件删除或隔离。请将安装目录加入安全软件白名单后重新下载更新',
+    },
     installNow: '立即安装',
     installUpdate: '安装更新',
     installStages: {

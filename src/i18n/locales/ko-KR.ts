@@ -100,6 +100,8 @@ export default {
     hotkeysHint:
       '메인 화면에서만 동작하며, 현재 인스턴스의 작업 시작 / 중지에 사용됩니다. Ctrl+F10, Ctrl+Shift+F11 과 같은 조합키도 지원합니다. F5 / F12 단독 키는 계속해서 시스템 / 브라우저용으로 예약됩니다.',
     hotkeysConflict: '시작과 중지 단축키는 서로 다른 키여야 합니다. 다른 키를 선택해 주세요.',
+    hotkeysModifierRequired:
+      '단일 키는 F1–F24만 사용할 수 있습니다. Ctrl, Alt, Shift 같은 보조 키를 함께 누르세요.',
     hotkeysGlobal: '전역 단축키',
     hotkeysGlobalHint: '창이 비활성화되어도 단축키 사용',
     hotkeysGlobalOnlyStart: '전역 모드에서는 시작만 작동',
@@ -206,6 +208,7 @@ export default {
       restart: '재시작',
       screenoff: '화면 끄기',
       sleep: '절전 모드',
+      hibernate: '최대 절전 모드',
       mute: '음소거',
       unmute: '음소거 해제',
     },
@@ -254,7 +257,6 @@ export default {
       alreadyRunning: '작업이 이미 실행 중이거나 사전 작업을 실행하고 있습니다',
       taskNotFound: '지정한 작업이 없거나 삭제되었습니다',
       noRunnableTasks: '실행 가능한 작업이 없습니다. 작업 정의와 진입점 설정을 확인하세요',
-      primaryTasksIncomplete: '앞쪽 작업이 정상 종료되지 않아 마무리 작업을 건너뛰었습니다',
       workstationLocked: '컴퓨터가 잠금 화면 상태입니다. 잠금을 해제한 후 작업을 실행하세요',
       agentStartParams: 'Agent #{{index}} 시작 파라미터: {{cmd}}  (작업 디렉토리: {{cwd}})',
       agentSpawnHintFileNotFound:
@@ -355,8 +357,6 @@ export default {
     pretaskExitCode: '사전 작업 종료 코드: {{code}}',
     pretaskFailed: '사전 작업 실행 실패: {{error}}',
     preActionConnectDelay: '{{seconds}}초 후 연결합니다...',
-    autoPreActionName: '▶️ {{name}} 실행',
-    autoPreActionAdded: '전처리 프로그램 자동 추가: {{name}} (기본적으로 비활성화)',
     removeConfirmTitle: '전처리 프로그램 삭제',
     removeConfirmMessage: '이 전처리 프로그램을 삭제하시겠습니까?',
   },
@@ -416,6 +416,7 @@ export default {
     portal: 'Portal',
     uinputWidth: '너비 (px)',
     uinputHeight: '높이 (px)',
+    uinputDimensionsRequired: 'UInput 화면 너비와 높이를 양의 정수로 먼저 입력하세요.',
     playcover: 'PlayCover (macOS)',
     macos: 'macOS 창',
     macosPermissionsRequired:
@@ -527,7 +528,6 @@ export default {
       stopTask: '작업 중지',
       // 예약 메시지
       scheduleStarting: '예약 실행 시작 [{{policy}}] {{time}}',
-      scheduleCompensating: '예약 보상 실행 [{{policy}}] {{time}} (절전/복귀 후 보완 실행)',
       // Agent 메시지
       agentStarting: 'Agent 시작 중...',
       agentStarted: 'Agent가 시작되었습니다',
@@ -543,6 +543,8 @@ export default {
       hotkeyActionStop: '작업 중지',
       hotkeyStartSuccess: '단축키로 작업을 시작했습니다:',
       hotkeyStopSuccess: '단축키로 작업을 중지했습니다',
+      hotkeyStopPending:
+        '중지 요청을 보냈지만 작업은 아직 현재 작업이 종료되기를 기다리고 있습니다.',
       hotkeyStopFailed: '단축키로 작업을 중지하지 못했습니다',
     },
   },
@@ -607,18 +609,21 @@ export default {
     tcpCompatMode: '통신 호환 모드',
     tcpCompatModeHint:
       '작업 시작 후 앱이 즉시 충돌하면 활성화해 보세요. 이 경우에만 사용하세요, 성능에 영향을 줄 수 있습니다',
-    webServerEnabled: 'Web 서버 활성화',
-    webServerEnabledHint: '비활성화하면 내장 Web 서버가 시작되지 않습니다 (재시작 필요)',
-    webServerPort: 'Web 서버 포트',
-    webServerPortHint: 'Web 서버 수신 포트를 사용자 지정합니다 (기본값 12701, 재시작 필요)',
+  },
+
+  webserver: {
+    title: 'Web 서버',
+    enabled: 'Web 서버 활성화',
+    enabledHint: '비활성화하면 내장 Web 서버가 시작되지 않습니다 (재시작 필요)',
+    port: 'Web 서버 포트',
+    portHint: 'Web 서버 수신 포트를 사용자 지정합니다 (기본값 12701, 재시작 필요)',
     allowLanAccess: 'LAN 접근 허용',
     allowLanAccessHint:
       '활성화하면 Web UI가 0.0.0.0에서 수신하여 LAN 내 다른 기기에서 접근할 수 있습니다',
-    webServerRestartMessage:
-      'Web 서버 설정 변경을 적용하려면 재시작이 필요합니다. 지금 재시작하시겠습니까?',
+    restartMessage: 'Web 서버 설정 변경을 적용하려면 재시작이 필요합니다. 지금 재시작하시겠습니까?',
     restartLater: '나중에',
     restartNow: '지금 재시작',
-    webServerAddress: 'Web 서버 주소',
+    address: 'Web 서버 주소',
   },
 
   // 설정 자동 복구 알림
@@ -740,6 +745,15 @@ export default {
     installing: '업데이트 설치 중...',
     installComplete: '설치 완료',
     installFailed: '설치 실패',
+    installErrors: {
+      packageMissing: '업데이트 패키지를 찾을 수 없습니다. 다시 다운로드해 주세요',
+      packageCorrupt: '업데이트 패키지가 손상되었습니다. 다시 다운로드해 주세요 ({{detail}})',
+      extractFailed:
+        '업데이트 패키지 압축 해제에 실패했습니다. 보안 프로그램에 의해 차단되었을 수 있습니다 ({{detail}})',
+      rolledBack: '업데이트에 실패하여 이전 버전으로 복원했습니다 ({{detail}})',
+      exeMissing:
+        '프로그램 파일이 없습니다. 보안 프로그램에 의해 삭제되거나 격리되었을 수 있습니다. 설치 폴더를 보안 프로그램의 예외 목록에 추가한 후 업데이트를 다시 다운로드해 주세요',
+    },
     installNow: '지금 설치',
     installUpdate: '업데이트 설치',
     installStages: {

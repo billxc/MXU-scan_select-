@@ -1,5 +1,4 @@
 pub mod commands;
-mod dummy_controller;
 mod mxu_actions;
 pub mod screenshot_service;
 mod tray;
@@ -20,12 +19,7 @@ pub fn run() {
     // 确保日志目录存在
     let _ = std::fs::create_dir_all(&logs_dir);
 
-    // 自动迁移旧版注册表自启动到任务计划程序
-    //TODO：26年2月写的，应该过几个月这自动迁移就能去除了，等旧版的都更上来
-    #[cfg(windows)]
-    commands::system::migrate_legacy_autostart();
-
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
@@ -57,6 +51,22 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
+            // Tauri 可能在 WebView 创建失败后仍注册逻辑窗口并执行 setup。
+            // 此时 HWND 不可用，必须先退出，避免留下托盘和后台服务。
+            #[cfg(windows)]
+            if app
+                .get_webview_window("main")
+                .and_then(|window| window.hwnd().ok())
+                .is_none()
+            {
+                log::error!(
+                    "Main WebView creation failed (pid={}); aborting startup before initializing backend services and tray",
+                    std::process::id()
+                );
+                app.handle().exit(1);
+                return Ok(());
+            }
+
             // 创建 MaaState 并注册为 Tauri 管理状态
             let maa_state = Arc::new(MaaState::default());
 
@@ -70,6 +80,13 @@ pub fn run() {
             match commands::utils::get_exe_directory() {
                 Ok(exe_dir) => {
                     app_config.load_interface(&exe_dir);
+
+                    // 确定自启动计划任务名并迁移旧版自启动配置（依赖 interface 中的项目名）
+                    #[cfg(windows)]
+                    {
+                        let project_name = app_config.project_name.lock().unwrap().clone();
+                        commands::system::migrate_legacy_autostart(project_name.as_deref());
+                    }
                 }
                 Err(e) => {
                     log::warn!("AppConfigState: could not get exe dir: {}", e);
@@ -152,10 +169,14 @@ pub fn run() {
             }
 
             // 启动时异步清理 cache/old 目录（更新残留的旧文件），不阻塞应用启动
-            if let Ok(data_dir) = commands::get_data_dir() {
-                let old_dir = std::path::Path::new(&data_dir).join("cache").join("old");
+            // 路径与更新时移入旧文件的位置一致（macOS 上数据目录与程序目录不同）
+            if let Ok(old_dir) = commands::update::get_old_dir() {
                 if old_dir.exists() {
                     std::thread::spawn(move || {
+                        // 与全量更新互斥：更新期间 cache/old 中是回滚备份
+                        let _guard = commands::update::OLD_DIR_LOCK
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
                         let (deleted, failed) = commands::cleanup_dir_contents(&old_dir);
                         if deleted > 0 || failed > 0 {
                             if failed == 0 {
@@ -280,6 +301,7 @@ pub fn run() {
             commands::update::fallback_update,
             commands::update::move_file_to_old,
             commands::update::cleanup_update_artifacts,
+            commands::update::current_exe_exists,
             // 下载命令
             commands::download::get_github_release_by_version,
             commands::download::download_file,
@@ -319,6 +341,8 @@ pub fn run() {
             commands::app_config::notify_config_changed,
             commands::app_config::rescan_scan_select,
             commands::app_config::take_config_recovery_notice,
+            // 系统通知命令
+            commands::notification::send_system_notification,
             // 匿名遥测命令
             commands::telemetry::telemetry_init,
             commands::telemetry::telemetry_set_enabled,
@@ -341,11 +365,32 @@ pub fn run() {
             }
         })
         .build(tauri::generate_context!())
-        .expect("error while building tauri application")
-        .run(|_app_handle, event| {
-            // 退出前收尾遥测（结束 Session 与悬挂 Transaction 并 flush）
-            if matches!(event, tauri::RunEvent::Exit) {
-                commands::telemetry::on_app_exit();
-            }
-        });
+        .expect("error while building tauri application");
+
+    #[cfg(windows)]
+    let requested_exit_code = std::rc::Rc::new(std::cell::Cell::new(None));
+    #[cfg(windows)]
+    let final_exit_code = requested_exit_code.clone();
+
+    let on_event = move |_app_handle: &tauri::AppHandle, event: tauri::RunEvent| {
+        #[cfg(windows)]
+        if let tauri::RunEvent::ExitRequested { code, .. } = &event {
+            requested_exit_code.set(*code);
+        }
+
+        // 退出前收尾遥测（结束 Session 与悬挂 Transaction 并 flush）
+        if matches!(event, tauri::RunEvent::Exit) {
+            commands::telemetry::on_app_exit();
+        }
+    };
+
+    #[cfg(windows)]
+    {
+        // tauri-runtime-wry 2.9.3 的 ControlFlow::Exit 丢失请求的退出码。
+        // 先让事件循环完成退出回调和框架清理，再向操作系统报告该退出码。
+        let runtime_exit_code = app.run_return(on_event);
+        std::process::exit(final_exit_code.get().unwrap_or(runtime_exit_code));
+    }
+    #[cfg(not(windows))]
+    app.run(on_event);
 }

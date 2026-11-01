@@ -101,6 +101,8 @@ export default {
       'メイン画面でのみ有効です。現在のインスタンスのタスク開始 / 停止に使用します。Ctrl+F10 や Ctrl+Shift+F11 などの修飾キー付きの組み合わせもサポートします。F5 / F12 単体は引き続きシステム / ブラウザ用に予約されています。',
     hotkeysConflict:
       '開始と停止のショートカットは同じキーにしないでください。別のキーを選択してください。',
+    hotkeysModifierRequired:
+      '単体のキーは F1–F24 のみ使えます。Ctrl、Alt、Shift などの修飾キーを追加してください。',
     hotkeysGlobal: 'グローバルショートカット',
     hotkeysGlobalHint: 'ウィンドウ非アクティブ時もショートカットを有効にする',
     hotkeysGlobalOnlyStart: 'グローバルモードでは開始のみ有効',
@@ -209,6 +211,7 @@ export default {
       restart: '再起動',
       screenoff: '画面オフ',
       sleep: 'スリープ',
+      hibernate: '休止状態',
       mute: 'ミュート',
       unmute: 'ミュート解除',
     },
@@ -257,7 +260,6 @@ export default {
       alreadyRunning: 'タスクは既に実行中か、前処理を実行しています',
       taskNotFound: '指定されたタスクが存在しないか、削除されています',
       noRunnableTasks: '実行可能なタスクがありません。タスク定義とエントリ設定を確認してください',
-      primaryTasksIncomplete: '前段タスクが正常に終了しなかったため、後段タスクをスキップしました',
       workstationLocked:
         'パソコンがロック画面の状態です。ロックを解除してからタスクを実行してください',
       agentStartParams: 'Agent #{{index}} 起動パラメータ: {{cmd}}  (作業ディレクトリ: {{cwd}})',
@@ -360,8 +362,6 @@ export default {
     pretaskExitCode: '事前タスク終了コード: {{code}}',
     pretaskFailed: '事前タスクの実行に失敗しました: {{error}}',
     preActionConnectDelay: '{{seconds}} 秒後に接続します...',
-    autoPreActionName: '▶️ {{name}} を起動',
-    autoPreActionAdded: '前処理プログラムを自動追加しました: {{name}}（デフォルトでは無効）',
     removeConfirmTitle: '前処理プログラムを削除',
     removeConfirmMessage: 'この前処理プログラムを削除してもよろしいですか？',
   },
@@ -421,6 +421,7 @@ export default {
     portal: 'Portal',
     uinputWidth: '幅 (px)',
     uinputHeight: '高さ (px)',
+    uinputDimensionsRequired: 'UInput の画面の幅と高さを正の整数で入力してください。',
     playcover: 'PlayCover (macOS)',
     macos: 'macOS ウィンドウ',
     macosPermissionsRequired:
@@ -536,7 +537,6 @@ export default {
       stopTask: 'タスクを停止',
       // スケジュールメッセージ
       scheduleStarting: 'スケジュール実行を開始 [{{policy}}] {{time}}',
-      scheduleCompensating: 'スケジュール補償実行 [{{policy}}] {{time}}（スリープ復帰後の補完）',
       // Agent メッセージ
       agentStarting: 'Agent を起動中...',
       agentStarted: 'Agent が起動しました',
@@ -552,6 +552,8 @@ export default {
       hotkeyActionStop: 'タスク停止',
       hotkeyStartSuccess: 'ショートカットキーでタスクを開始しました：',
       hotkeyStopSuccess: 'ショートカットキーでタスクを停止しました',
+      hotkeyStopPending:
+        '停止リクエストは送信されましたが、タスクは現在の操作が終了するのを待っています。',
       hotkeyStopFailed: 'ショートカットキーでタスクを停止できませんでした',
     },
   },
@@ -616,19 +618,21 @@ export default {
     tcpCompatMode: '通信互換モード',
     tcpCompatModeHint:
       'タスク開始後にアプリがすぐにクラッシュする場合は有効にしてください。この場合のみ使用し、それ以外は性能に影響します',
-    webServerEnabled: 'Web サーバーを有効化',
-    webServerEnabledHint: '無効にすると内蔵 Web サーバーは起動しません（再起動後に反映）',
-    webServerPort: 'Web サーバーポート',
-    webServerPortHint:
-      'Web サーバーのリッスンポートをカスタマイズ（デフォルト 12701、再起動後に反映）',
+  },
+
+  webserver: {
+    title: 'Web サーバー',
+    enabled: 'Web サーバーを有効化',
+    enabledHint: '無効にすると内蔵 Web サーバーは起動しません（再起動後に反映）',
+    port: 'Web サーバーポート',
+    portHint: 'Web サーバーのリッスンポートをカスタマイズ（デフォルト 12701、再起動後に反映）',
     allowLanAccess: 'LAN アクセスを許可',
     allowLanAccessHint:
       '有効にすると Web UI が 0.0.0.0 でリッスンし、LAN 内の他のデバイスからアクセスできます',
-    webServerRestartMessage:
-      'Web サーバー設定の変更を反映するには再起動が必要です。今すぐ再起動しますか？',
+    restartMessage: 'Web サーバー設定の変更を反映するには再起動が必要です。今すぐ再起動しますか？',
     restartLater: '後で',
     restartNow: '今すぐ再起動',
-    webServerAddress: 'Web サーバーアドレス',
+    address: 'Web サーバーアドレス',
   },
 
   // 設定の自動修復通知
@@ -753,6 +757,15 @@ export default {
     installing: 'アップデートをインストール中...',
     installComplete: 'インストール完了',
     installFailed: 'インストールに失敗しました',
+    installErrors: {
+      packageMissing: '更新パッケージが見つかりません。再度ダウンロードしてください',
+      packageCorrupt: '更新パッケージが破損しています。再度ダウンロードしてください（{{detail}}）',
+      extractFailed:
+        '更新パッケージの展開に失敗しました。セキュリティソフトにブロックされた可能性があります（{{detail}}）',
+      rolledBack: '更新に失敗したため、更新前のバージョンに戻しました（{{detail}}）',
+      exeMissing:
+        'プログラムファイルが見つかりません。セキュリティソフトに削除または隔離された可能性があります。インストールフォルダをセキュリティソフトの除外リストに追加してから、更新を再度ダウンロードしてください',
+    },
     installNow: '今すぐインストール',
     installUpdate: 'アップデートをインストール',
     installStages: {

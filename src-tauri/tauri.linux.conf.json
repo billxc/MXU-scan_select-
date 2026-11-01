@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "plugins": {
+    "fs": {
+      "requireLiteralLeadingDot": false
+    },
+    "opener": {
+      "requireLiteralLeadingDot": false
+    }
+  }
+}

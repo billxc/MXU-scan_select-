@@ -67,7 +67,7 @@ export function GeneralSection() {
         .then((os) => {
           isWindowsRef.current = os === 'windows';
           if (isWindowsRef.current) {
-            tauriInvoke<boolean>('autostart_is_enabled', { suffix: projectInterface?.name })
+            tauriInvoke<boolean>('autostart_is_enabled')
               .then(setAutoStartEnabled)
               .catch(() => {});
           } else {
@@ -100,9 +100,7 @@ export function GeneralSection() {
     try {
       if (isWindowsRef.current) {
         const { invoke } = await import('@tauri-apps/api/core');
-        await invoke(enabled ? 'autostart_enable' : 'autostart_disable', {
-          suffix: projectInterface?.name,
-        });
+        await invoke(enabled ? 'autostart_enable' : 'autostart_disable');
       } else {
         const { enable, disable } = await import('@tauri-apps/plugin-autostart');
         if (enabled) {
@@ -213,7 +211,7 @@ export function GeneralSection() {
 
               {instanceDropdownOpen && (
                 <div
-                  className="absolute right-0 z-20 mt-1 w-full min-w-[160px] max-h-60 overflow-y-auto rounded-lg border border-border bg-bg-primary shadow-lg"
+                  className="mxu-overlay-surface absolute right-0 z-20 mt-1 w-full min-w-[160px] max-h-60 overflow-y-auto rounded-lg border border-border bg-bg-primary shadow-lg"
                   role="listbox"
                 >
                   {dropdownOptions.map((opt) => {

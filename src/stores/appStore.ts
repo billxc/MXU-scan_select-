@@ -31,6 +31,7 @@ import type {
   Instance,
   OptionDefinition,
   OptionValue,
+  PresetTaskItem,
   ProjectInterface,
   SchedulePolicy,
   SelectedTask,
@@ -235,7 +236,7 @@ export const useAppStore = create<AppState>()(
     backgroundOpacity: 50,
     confirmBeforeDelete: false,
     maxLogsPerInstance: DEFAULT_MAX_LOGS_PER_INSTANCE,
-    autoClearLogsOnLaunch: true,
+    autoClearLogsOnLaunch: false,
     helpImproveSoftware: true,
     customAccents: [],
     setTheme: (theme) => {
@@ -630,20 +631,14 @@ export const useAppStore = create<AppState>()(
 
       const newTasks: SelectedTask[] = [];
 
-      for (const presetTask of preset.task) {
-        const taskDef = pi.task.find((t) => t.name === presetTask.name);
-        if (!taskDef) {
-          loggers.task.warn(
-            `[applyPreset] Task "${presetTask.name}" referenced in preset "${presetName}" not found in project interface and will be skipped.`,
-          );
-          continue;
-        }
-
-        // 初始化默认选项值
+      // 按默认值初始化选项，再用预设值覆盖
+      const buildSelectedTask = (
+        taskName: string,
+        optionKeys: string[] | undefined,
+        presetTask: PresetTaskItem,
+      ): SelectedTask => {
         const optionValues =
-          taskDef.option && pi.option ? initializeAllOptionValues(taskDef.option, pi.option) : {};
-
-        // 用预设值覆盖
+          optionKeys && pi.option ? initializeAllOptionValues(optionKeys, pi.option) : {};
         if (presetTask.option && pi.option) {
           for (const [optionKey, presetValue] of Object.entries(presetTask.option)) {
             const converted = convertPresetOptionValue(optionKey, presetValue, pi.option);
@@ -652,14 +647,42 @@ export const useAppStore = create<AppState>()(
             }
           }
         }
-
-        newTasks.push({
+        return {
           id: generateId(),
-          taskName: presetTask.name,
+          taskName,
           enabled: presetTask.enabled !== false,
           optionValues,
           expanded: true,
-        });
+        };
+      };
+
+      // v2.10.3: 按 preset.pretask 设置预任务（按顶层 pretask 顺序排列，未列出的不添加）。
+      // 预设只能应用于空任务列表，未声明 pretask 时无需保留已有预任务
+      if (preset.pretask) {
+        const pretaskItems = getPretaskItems(pi);
+        for (const presetPretask of preset.pretask) {
+          if (!pretaskItems.some((item) => item.name === presetPretask.name)) {
+            loggers.task.warn(
+              `[applyPreset] Pretask "${presetPretask.name}" referenced in preset "${presetName}" not found in project interface and will be skipped.`,
+            );
+          }
+        }
+        for (const item of pretaskItems) {
+          const presetPretask = preset.pretask.find((p) => p.name === item.name);
+          if (!presetPretask) continue;
+          newTasks.push(buildSelectedTask(pretaskName(item), item.option, presetPretask));
+        }
+      }
+
+      for (const presetTask of preset.task ?? []) {
+        const taskDef = pi.task.find((t) => t.name === presetTask.name);
+        if (!taskDef) {
+          loggers.task.warn(
+            `[applyPreset] Task "${presetTask.name}" referenced in preset "${presetName}" not found in project interface and will be skipped.`,
+          );
+          continue;
+        }
+        newTasks.push(buildSelectedTask(presetTask.name, taskDef.option, presetTask));
       }
 
       set((state) => ({
@@ -1479,7 +1502,7 @@ export const useAppStore = create<AppState>()(
         backgroundOpacity: effectiveBgOpacity,
         confirmBeforeDelete: config.settings.confirmBeforeDelete ?? false,
         maxLogsPerInstance: config.settings.maxLogsPerInstance ?? DEFAULT_MAX_LOGS_PER_INSTANCE,
-        autoClearLogsOnLaunch: config.settings.autoClearLogsOnLaunch ?? true,
+        autoClearLogsOnLaunch: config.settings.autoClearLogsOnLaunch ?? false,
         // 默认开启；调试 / 开发版本强制关闭
         helpImproveSoftware: isTelemetryBlockedByBuild(get().projectInterface)
           ? false
