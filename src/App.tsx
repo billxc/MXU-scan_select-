@@ -564,6 +564,7 @@ function App() {
           const { getCurrentWindow } = await import('@tauri-apps/api/window');
           const currentWindow = getCurrentWindow();
           await currentWindow.setIcon(fullIconPath);
+          await invoke('sync_window_taskbar_icon');
           log.info('窗口图标已设置:', fullIconPath);
         } catch (err) {
           log.warn('设置窗口图标失败:', err);

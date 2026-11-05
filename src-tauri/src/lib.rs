@@ -3,6 +3,7 @@ mod mxu_actions;
 pub mod screenshot_service;
 mod tray;
 mod web_server;
+mod window_icon;
 pub mod ws_broadcast;
 
 use commands::{AppConfigState, MaaState};
@@ -336,6 +337,7 @@ pub fn run() {
             commands::tray::set_minimize_to_tray,
             commands::tray::get_minimize_to_tray,
             commands::tray::update_tray_icon,
+            window_icon::sync_window_taskbar_icon,
             commands::tray::update_tray_tooltip,
             // 配置同步命令（WebUI 实时同步）
             commands::app_config::notify_config_changed,
@@ -357,6 +359,8 @@ pub fn run() {
                 }
                 // 窗口销毁时清理所有 agent 子进程
                 tauri::WindowEvent::Destroyed => {
+                    #[cfg(windows)]
+                    window_icon::release_taskbar_icon(window.label());
                     if let Some(state) = window.try_state::<Arc<MaaState>>() {
                         state.cleanup_all_agent_children();
                     }
