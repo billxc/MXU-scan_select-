@@ -260,6 +260,17 @@ export function useMaaCallbackLogger() {
           // 组件已卸载则忽略
           if (cancelled) return;
 
+          if (message === 'MuMu.Shutdown.Failed') {
+            const targetId = (details as Record<string, unknown>).instance_id;
+            if (typeof targetId === 'string') {
+              addLog(targetId, {
+                type: 'error',
+                message: `${t('controller.mumu.shutdownFailed')}: ${String((details as Record<string, unknown>).error)}`,
+              });
+            }
+            return;
+          }
+
           // 获取当前活动实例 ID
           const currentActiveId = useAppStore.getState().activeInstanceId;
           if (!currentActiveId) return;

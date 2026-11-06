@@ -404,6 +404,16 @@ export default {
 
   // 控制器
   controller: {
+    mumu: {
+      autoStart: '自动启动 MuMu',
+      autoStartHint: '开始任务前启动绑定的 MuMu 实例，并等待安卓就绪。仅支持 MuMu 自动识别连接。',
+      autoShutdown: '任务结束后关闭 MuMu',
+      autoShutdownHint:
+        '整批任务自然结束（含失败）后关闭绑定实例；手动停止不关闭。即使实例是手动启动的也会关闭。',
+      starting: '正在启动 MuMu 并等待安卓就绪…',
+      startFailed: 'MuMu 启动失败',
+      shutdownFailed: '任务已结束，但 MuMu 关闭失败',
+    },
     title: '控制器',
     selectController: '选择控制器',
     adb: 'Android 设备',

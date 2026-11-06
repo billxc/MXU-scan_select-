@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::process::Child;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -245,6 +245,38 @@ pub struct InstanceRuntime {
     pub stop_started_at: Option<Instant>,
     /// 任务运行状态（后端管理，单一真相来源）
     pub task_run_state: TaskRunState,
+    /// Terminal task IDs, including tasks without a selected_task_id.
+    pub completed_task_ids: HashSet<i64>,
+    pub run_has_failed: bool,
+    /// Claimed once by the last natural callback; stays true until the next run.
+    pub run_finalized: bool,
+    /// Agent cleanup and optional emulator shutdown are still in progress.
+    pub finalizing: bool,
+    /// Persistent for this run, even after stop_in_progress is cleared by a query.
+    pub run_cancelled: bool,
+    /// Frozen on the first batch; appending tasks never changes this binding.
+    pub mumu_shutdown_binding: Option<super::mumu::MuMuBinding>,
+}
+
+impl InstanceRuntime {
+    pub fn is_running(&self) -> bool {
+        self.finalizing || self.tasker.as_ref().is_some_and(|t| t.running())
+    }
+
+    pub fn claim_finalization(&mut self) -> bool {
+        if self.mumu_shutdown_binding.is_none()
+            || self.run_finalized
+            || self.run_cancelled
+            || self.stop_in_progress
+            || self.task_run_state.pending_task_ids.is_empty()
+            || !self.task_run_state.pending_task_ids.iter().all(|id| self.completed_task_ids.contains(id))
+        {
+            return false;
+        }
+        self.run_finalized = true;
+        self.finalizing = true;
+        true
+    }
 }
 
 impl Drop for InstanceRuntime {
@@ -342,6 +374,7 @@ pub struct MaaState {
     pub instances: Mutex<HashMap<String, InstanceRuntime>>,
     /// 前置程序停止请求（用于中断等待退出）
     pub pre_action_stop_requests: Mutex<HashSet<String>>,
+    pub mumu_starts: Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>,
     /// Controller 连接池：相同配置的 Controller 复用同一个 MaaControllerHandle
     pub controller_pool: Mutex<HashMap<ControllerConfig, Controller>>,
     /// 缓存的 ADB 设备列表（全局共享，避免重复搜索）

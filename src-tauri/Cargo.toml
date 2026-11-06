@@ -36,7 +36,7 @@ base64 = "0.22"
 zip = "7.2.0"
 flate2 = "1.0"
 tar = "0.4"
-tokio = { version = "1", features = ["rt", "sync", "net", "rt-multi-thread"] }
+tokio = { version = "1", features = ["rt", "sync", "net", "rt-multi-thread", "process", "time", "macros"] }
 reqwest = { version = "0.12", features = ["stream", "blocking", "json", "socks"] }
 axum = { version = "0.7", features = ["ws"] }
 tower-http = { version = "0.5", features = ["cors", "fs"] }

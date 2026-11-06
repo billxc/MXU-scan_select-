@@ -24,6 +24,7 @@ mod local_link_path;
 pub mod local_links;
 pub mod maa_agent;
 pub mod maa_core;
+pub mod mumu;
 pub mod notification;
 pub mod state;
 pub mod system;

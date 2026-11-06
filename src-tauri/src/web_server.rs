@@ -246,6 +246,14 @@ pub async fn start_web_server(
             axum::routing::post(handle_run_task),
         )
         .route(
+            "/maa/instances/:id/mumu/prepare",
+            axum::routing::post(handle_prepare_mumu),
+        )
+        .route(
+            "/maa/instances/:id/mumu/cancel",
+            axum::routing::post(handle_cancel_mumu_start),
+        )
+        .route(
             "/maa/instances/:id/tasks/start",
             axum::routing::post(handle_start_tasks),
         )
@@ -640,7 +648,7 @@ async fn handle_get_maa_state(State(state): State<WebState>) -> impl IntoRespons
             let mut instance_states: HashMap<String, serde_json::Value> = HashMap::new();
 
             for (id, runtime) in instances.iter_mut() {
-                let is_running = runtime.tasker.as_ref().is_some_and(|t| t.running());
+                let is_running = runtime.is_running();
 
                 // 与 state.rs 的 maa_get_all_states 保持一致：清理停止标志
                 if !is_running && runtime.stop_in_progress {
@@ -925,6 +933,33 @@ async fn handle_run_task(
     Json(serde_json::json!({ "taskIds": task_ids })).into_response()
 }
 
+async fn handle_prepare_mumu(
+    State(state): State<WebState>,
+    axum::extract::Path(instance_id): axum::extract::Path<String>,
+    Json(binding): Json<crate::commands::mumu::MuMuBinding>,
+) -> impl IntoResponse {
+    match crate::commands::mumu::prepare_mumu_impl(&state.maa_state, instance_id, binding).await {
+        Ok(()) => Json(serde_json::json!({ "success": true })).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": error })),
+        ).into_response(),
+    }
+}
+
+async fn handle_cancel_mumu_start(
+    State(state): State<WebState>,
+    axum::extract::Path(instance_id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    match crate::commands::mumu::cancel_mumu_start_impl(&state.maa_state, &instance_id) {
+        Ok(()) => Json(serde_json::json!({ "success": true })).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": error })),
+        ).into_response(),
+    }
+}
+
 /// POST /api/maa/instances/:id/tasks/start 请求体
 #[derive(serde::Deserialize)]
 struct StartTasksRequest {
@@ -942,6 +977,8 @@ struct StartTasksRequest {
     /// 当前 controller 描述，仅用于遥测埋点
     #[serde(default)]
     controller_info: Option<ControllerInfo>,
+    #[serde(default)]
+    mumu_shutdown_binding: Option<crate::commands::mumu::MuMuBinding>,
 }
 
 /// POST /api/maa/instances/:id/tasks/start
@@ -978,6 +1015,7 @@ async fn handle_start_tasks(
         body.pi_envs,
         body.reset_state.unwrap_or(true),
         body.controller_info,
+        body.mumu_shutdown_binding,
     )
     .await
     {

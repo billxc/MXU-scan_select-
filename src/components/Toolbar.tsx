@@ -541,6 +541,18 @@ export function Toolbar({ showAddPanel, onToggleAddPanel, className }: ToolbarPr
           }
         }
 
+        if (controller.type === 'Adb' && savedDevice?.mumu?.autoStart) {
+          await beginPreActionControl(targetId);
+          try {
+            onPhaseChange?.('searching');
+            addLog(targetId, { type: 'info', message: t('controller.mumu.starting') });
+            await maaService.prepareMuMu(targetId, savedDevice.mumu);
+            throwIfPreActionStopped(targetId);
+          } finally {
+            await endPreActionControl(targetId);
+          }
+        }
+
         // 收集所有启用且有程序路径的前置程序，按列表顺序执行
         const allPreActions = (targetInstance.preActions ?? []).filter(
           (a) => a.enabled && a.program.trim(),
@@ -1273,6 +1285,9 @@ export function Toolbar({ showAddPanel, onToggleAddPanel, className }: ToolbarPr
             useAppStore.getState().globalOptionValues,
             projectInterface?.option ?? {},
           ),
+          controller.type === 'Adb' && savedDevice?.mumu?.autoShutdown
+            ? { path: savedDevice.mumu.path, index: savedDevice.mumu.index }
+            : undefined,
         );
 
         startedTaskIds.forEach((maaTaskId, index) => {
@@ -1300,7 +1315,8 @@ export function Toolbar({ showAddPanel, onToggleAddPanel, className }: ToolbarPr
         log.error(`实例 ${targetInstance.name}: 任务启动异常:`, err);
 
         const errMsg = err instanceof Error ? err.message : String(err);
-        const cancelled = errMsg === PRE_ACTION_CANCELLED_ERROR;
+        const cancelled =
+          errMsg === PRE_ACTION_CANCELLED_ERROR || errMsg.includes('MUMU_START_CANCELLED');
         if (!cancelled) {
           const localizedErrMsg = errMsg
             .replace('UINPUT_SCREEN_SIZE_REQUIRED', t('controller.uinputDimensionsRequired'))
@@ -1474,6 +1490,10 @@ export function Toolbar({ showAddPanel, onToggleAddPanel, className }: ToolbarPr
       if (preActionControlledInstanceIdRef.current === targetInstanceId) {
         preActionStopRequestedRef.current = true;
         try {
+          const saved = useAppStore
+            .getState()
+            .instances.find((i) => i.id === targetInstanceId)?.savedDevice;
+          if (saved?.mumu?.autoStart) await maaService.cancelMuMuStart(targetInstanceId);
           await maaService.setPreActionStop(targetInstanceId, true);
           keepStoppingForPreAction = true;
         } catch (err) {

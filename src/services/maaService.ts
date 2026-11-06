@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import type {
   AdbDevice,
+  MuMuBinding,
   Win32Window,
   GamescopeInstance,
   ControllerConfig,
@@ -188,6 +189,28 @@ export const maaService = {
     );
     log.info('版本检查结果:', result);
     return result;
+  },
+
+  async prepareMuMu(instanceId: string, binding: MuMuBinding): Promise<void> {
+    try {
+      if (isTauri()) {
+        await invoke('prepare_mumu', { instanceId, binding });
+      } else {
+        await apiPost(`/maa/instances/${instanceId}/mumu/prepare`, binding);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('MUMU_START_CANCELLED')) throw new Error('MUMU_START_CANCELLED');
+      throw new Error(`${i18n.t('controller.mumu.startFailed')}: ${message}`);
+    }
+  },
+
+  async cancelMuMuStart(instanceId: string): Promise<void> {
+    if (isTauri()) {
+      await invoke('cancel_mumu_start', { instanceId });
+    } else {
+      await apiPost(`/maa/instances/${instanceId}/mumu/cancel`, {});
+    }
   },
 
   /**
@@ -645,6 +668,7 @@ export const maaService = {
     piEnvs?: Record<string, string>,
     controllerInfo?: ControllerTelemetryInfo,
     logRedactSecrets?: string[],
+    mumuShutdownBinding?: MuMuBinding,
   ): Promise<number[]> {
     log.info('启动任务, 实例:', instanceId, ', 任务数:', tasks.length, ', cwd:', cwd || '.');
     tasks.forEach((task, i) => {
@@ -674,6 +698,7 @@ export const maaService = {
           tcp_compat_mode: tcpCompatMode || false,
           pi_envs: agentConfigs && agentConfigs.length > 0 && piEnvs ? piEnvs : null,
           controller_info: controllerInfo ?? null,
+          mumu_shutdown_binding: mumuShutdownBinding ?? null,
         },
       );
       log.info('任务已提交 (HTTP), taskIds:', result.taskIds);
@@ -688,6 +713,7 @@ export const maaService = {
       tcpCompatMode: tcpCompatMode || false,
       piEnvs: hasAgent && piEnvs ? piEnvs : null,
       controllerInfo: controllerInfo ?? null,
+      mumuShutdownBinding: mumuShutdownBinding ?? null,
     });
     log.info('任务已提交, taskIds:', taskIds);
     return taskIds;

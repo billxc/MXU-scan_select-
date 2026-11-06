@@ -2,6 +2,17 @@
 
 import { loggers } from '@/utils/logger';
 
+/** MuMu Manager 使用的安装目录和多开实例序号（Windows）。 */
+export interface MuMuBinding {
+  path: string;
+  index: number;
+}
+
+export interface MuMuSettings extends MuMuBinding {
+  autoStart?: boolean;
+  autoShutdown?: boolean;
+}
+
 /** ADB 设备信息 */
 export interface AdbDevice {
   name: string;

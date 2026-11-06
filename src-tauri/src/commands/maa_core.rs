@@ -1460,6 +1460,9 @@ pub fn stop_task_impl(state: &MaaState, instance_id: &str) -> Result<(), String>
     let mut instances = state.instances.lock().map_err(|e| e.to_string())?;
     let instance = instances.get_mut(instance_id).ok_or("Instance not found")?;
     let tasker = instance.tasker.as_ref().ok_or("Tasker not created")?;
+    if instance.mumu_shutdown_binding.is_some() {
+        instance.run_cancelled = true;
+    }
 
     if instance.stop_in_progress {
         if !tasker.running() {
@@ -1545,7 +1548,7 @@ pub fn maa_is_running(state: State<Arc<MaaState>>, instance_id: String) -> Resul
     let instances = state.instances.lock().map_err(|e| e.to_string())?;
     let instance = instances.get(&instance_id).ok_or("Instance not found")?;
 
-    Ok(instance.tasker.as_ref().is_some_and(|t| t.running()))
+    Ok(instance.is_running())
 }
 
 // ============================================================================

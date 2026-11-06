@@ -79,7 +79,7 @@ pub fn handle_task_callback(
         None => return,
     };
 
-    let all_done = {
+    let (all_done, mumu_finalization) = {
         let mut instances = match maa_state.instances.lock() {
             Ok(g) => g,
             Err(_) => return,
@@ -88,9 +88,23 @@ pub fn handle_task_callback(
             Some(i) => i,
             None => return,
         };
+        // MuMu opt-in runs need a once guard and deferred completion. Leave the
+        // existing callback path unchanged for all other connections.
+        if instance.mumu_shutdown_binding.is_some() {
+            if instance.run_finalized
+                || instance.run_cancelled
+                || !instance.task_run_state.pending_task_ids.contains(&task_id)
+            {
+                return;
+            }
+            if !is_started {
+                instance.completed_task_ids.insert(task_id);
+                instance.run_has_failed |= is_failed;
+            }
+        }
         let state = &mut instance.task_run_state;
 
-        if is_started {
+        let all_done = if is_started {
             // 任务开始：定位该任务在队列中的索引，更新当前索引和状态
             if let Some(idx) = state.pending_task_ids.iter().position(|&id| id == task_id) {
                 state.current_task_index = idx;
@@ -108,6 +122,9 @@ pub fn handle_task_callback(
 
             // 检查所有已入队任务是否均已完成
             let all_completed = state.pending_task_ids.iter().all(|id| {
+                if instance.mumu_shutdown_binding.is_some() {
+                    return instance.completed_task_ids.contains(id);
+                }
                 state
                     .mappings
                     .get(id)
@@ -117,14 +134,20 @@ pub fn handle_task_callback(
             });
 
             if all_completed {
-                let has_failed = state.statuses.values().any(|s| s == "failed");
-                state.overall_status =
-                    Some(if has_failed { "Failed" } else { "Succeeded" }.to_string());
+                if instance.mumu_shutdown_binding.is_none() {
+                    let has_failed = state.statuses.values().any(|s| s == "failed");
+                    state.overall_status =
+                        Some(if has_failed { "Failed" } else { "Succeeded" }.to_string());
+                }
                 instance.task_ids.clear();
             }
 
             all_completed
-        }
+        };
+        let mumu_finalization = instance.mumu_shutdown_binding.is_some()
+            && all_done
+            && instance.claim_finalization();
+        (all_done, mumu_finalization)
     }; // 锁在此处释放
 
     // 遥测埋点（锁外调用，仅操作 telemetry 内部的 RUNS 锁）
@@ -139,7 +162,10 @@ pub fn handle_task_callback(
 
     // 通知前端刷新状态
     emit_state_changed(app, instance_id, "task-progress");
-    if all_done {
+    if mumu_finalization {
+        // Never block a MaaFramework callback while waiting for the tasker to stop.
+        super::mumu::finalize_run(Arc::clone(maa_state), app.clone(), instance_id.to_string());
+    } else if all_done {
         emit_state_changed(app, instance_id, "tasks-completed");
 
         // 实例内全部任务结束后清理旧 agent，避免 agent 进程跨轮累积

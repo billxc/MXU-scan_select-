@@ -267,6 +267,8 @@ pub fn run() {
             commands::maa_core::maa_screenshot_subscribe,
             commands::maa_core::maa_screenshot_unsubscribe,
             // Agent 命令
+            commands::mumu::prepare_mumu,
+            commands::mumu::cancel_mumu_start,
             commands::maa_agent::maa_start_tasks,
             commands::maa_agent::maa_stop_agent,
             // 文件操作命令

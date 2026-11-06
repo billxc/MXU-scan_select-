@@ -24,6 +24,8 @@ import { LinuxInputMethod, parseLinuxInputMethod } from '@/types/maa';
 import type { AdbDevice, Win32Window, GamescopeInstance, ControllerConfig } from '@/types/maa';
 import type { ControllerItem, ResourceItem } from '@/types/interface';
 import { computeResourcePaths } from '@/utils/resourcePath';
+import { saveAdbDevice } from '@/utils/mumu';
+import { SwitchField } from '@/components/FormControls';
 import { buildPlayCoverControllerConfig } from '@/utils/playCoverController';
 import { hasValidUinputDimensions, parseUinputDimension } from '@/utils/linuxUinput';
 import {
@@ -880,11 +882,8 @@ export function ConnectionPanel() {
     setSelectedAdbDevice(device);
     setShowDeviceDropdown(false);
 
-    // 保存设备名称和地址到实例配置。
-    setInstanceSavedDevice(instanceId, {
-      adbDeviceName: device.name,
-      adbDeviceAddress: device.address,
-    });
+    const previous = useAppStore.getState().instances.find((i) => i.id === instanceId);
+    setInstanceSavedDevice(instanceId, saveAdbDevice(device, previous?.savedDevice?.mumu));
 
     // 自动连接
     setIsConnecting(true);
@@ -1817,6 +1816,30 @@ export function ConnectionPanel() {
                     <RefreshCw className="w-3.5 h-3.5 text-text-secondary" />
                   )}
                 </button>
+              </div>
+            )}
+
+            {controllerType === 'Adb' && activeInstance?.savedDevice?.mumu && (
+              <div className="space-y-2">
+                {(['autoStart', 'autoShutdown'] as const).map((key) => (
+                  <SwitchField
+                    key={key}
+                    label={t(`controller.mumu.${key}`)}
+                    hint={t(`controller.mumu.${key}Hint`)}
+                    value={!!activeInstance.savedDevice?.mumu?.[key]}
+                    disabled={isRunning || isConnecting}
+                    onChange={(value) => {
+                      const saved = useAppStore
+                        .getState()
+                        .instances.find((i) => i.id === instanceId)?.savedDevice;
+                      if (!saved?.mumu) return;
+                      setInstanceSavedDevice(instanceId, {
+                        ...saved,
+                        mumu: { ...saved.mumu, [key]: value },
+                      });
+                    }}
+                  />
+                ))}
               </div>
             )}
 

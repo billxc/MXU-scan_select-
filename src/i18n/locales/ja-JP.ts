@@ -412,6 +412,17 @@ export default {
 
   // コントローラー
   controller: {
+    mumu: {
+      autoStart: 'Automatically start MuMu',
+      autoStartHint:
+        'Start the bound MuMu instance before tasks and wait for Android. Requires an automatically detected MuMu connection.',
+      autoShutdown: 'Close MuMu after tasks',
+      autoShutdownHint:
+        'Close the bound instance when the whole queue finishes, including failures, but not on manual stop. Also closes manually started instances.',
+      starting: 'Starting MuMu and waiting for Android…',
+      startFailed: 'Could not start MuMu',
+      shutdownFailed: 'Tasks finished, but MuMu could not be closed',
+    },
     title: 'コントローラー',
     selectController: 'コントローラーを選択',
     adb: 'Android デバイス',
