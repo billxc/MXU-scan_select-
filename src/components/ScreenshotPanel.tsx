@@ -18,6 +18,7 @@ import { maaService } from '@/services/maaService';
 import { useAppStore } from '@/stores/appStore';
 import { ContextMenu, useContextMenu, type MenuItem } from './ContextMenu';
 import { getFrameInterval } from './FrameRateSelector';
+import { isMuMuSavedDevice } from '@/utils/mumu';
 import { loggers } from '@/utils/logger';
 import { useIsMobile } from '@/hooks/useIsMobile';
 
@@ -39,6 +40,8 @@ export function ScreenshotPanel() {
   const isMobile = useIsMobile();
   const {
     activeInstanceId,
+    instances,
+    cachedAdbDevices,
     instanceConnectionStatus,
     instanceResourceLoaded,
     sidePanelExpanded,
@@ -52,24 +55,31 @@ export function ScreenshotPanel() {
   // 在移动端单列布局中，截图面板始终可见，不受 sidePanelExpanded 影响
   const isPanelVisible = isMobile || sidePanelExpanded;
 
+  const instanceId = activeInstanceId || '';
+  const activeInstance = instances.find((i) => i.id === instanceId);
+  const isMuMu = isMuMuSavedDevice(activeInstance?.savedDevice, cachedAdbDevices);
+
   const [screenshotUrl, setScreenshotUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [touchClickEnabled, setTouchClickEnabled] = useState(true);
+  const [clickRipple, setClickRipple] = useState<{ id: number; xPct: number; yPct: number } | null>(
+    null,
+  );
 
   const { state: menuState, show: showMenu, hide: hideMenu } = useContextMenu();
   const fullscreenImgRef = useRef<HTMLImageElement>(null);
+  const inlineImgRef = useRef<HTMLImageElement>(null);
 
   // 用于控制截图流的引用
   const streamingRef = useRef(false);
   const lastFrameTimeRef = useRef(0);
-  const frameIntervalRef = useRef(getFrameInterval(screenshotFrameRate));
+  const frameIntervalRef = useRef(getFrameInterval(screenshotFrameRate, isMuMu));
 
-  // 帧率配置变化时更新帧间隔
+  // 帧率配置或 MuMu 状态变化时更新帧间隔
   useEffect(() => {
-    frameIntervalRef.current = getFrameInterval(screenshotFrameRate);
-  }, [screenshotFrameRate]);
-
-  const instanceId = activeInstanceId || '';
+    frameIntervalRef.current = getFrameInterval(screenshotFrameRate, isMuMu);
+  }, [screenshotFrameRate, isMuMu]);
 
   // 从 store 获取当前实例的截图流状态
   const isStreaming = instanceId ? (instanceScreenshotStreaming[instanceId] ?? false) : false;
@@ -114,7 +124,7 @@ export function ScreenshotPanel() {
   useEffect(() => {
     if (!instanceId || !isStreaming) return;
 
-    const intervalMs = getFrameInterval(screenshotFrameRate);
+    const intervalMs = getFrameInterval(screenshotFrameRate, isMuMu);
     maaService
       .screenshotSubscribe(instanceId, `panel-${instanceId}`, intervalMs)
       .catch((e) => log.warn('截图订阅失败:', e));
@@ -122,7 +132,7 @@ export function ScreenshotPanel() {
     return () => {
       maaService.screenshotUnsubscribe(instanceId, `panel-${instanceId}`).catch(() => {});
     };
-  }, [instanceId, isStreaming, screenshotFrameRate]);
+  }, [instanceId, isStreaming, screenshotFrameRate, isMuMu]);
 
   // ESC 键退出全屏
   useEffect(() => {
@@ -273,12 +283,32 @@ export function ScreenshotPanel() {
   const connectionStatus = instanceId ? instanceConnectionStatus[instanceId] : undefined;
   const isResourceLoaded = instanceId ? instanceResourceLoaded[instanceId] : false;
 
-  // 当设备已连接且资源已加载时自动折叠（与连接设置面板行为一致）
+  // 当设备已连接且资源已加载时：移动端或 MuMu 实例自动展开并开启实时流，非 MuMu 桌面端自动折叠
   useEffect(() => {
     if (connectionStatus === 'Connected' && isResourceLoaded) {
-      setScreenshotPanelExpanded(false);
+      if (isMuMu || isMobile) {
+        setScreenshotPanelExpanded(true);
+        if (instanceId && isPanelVisible) {
+          streamingRef.current = true;
+          setIsStreaming(true);
+          setError(null);
+          streamLoop();
+        }
+      } else {
+        setScreenshotPanelExpanded(false);
+      }
     }
-  }, [connectionStatus, isResourceLoaded, setScreenshotPanelExpanded]);
+  }, [
+    connectionStatus,
+    isResourceLoaded,
+    isMuMu,
+    isMobile,
+    instanceId,
+    isPanelVisible,
+    setScreenshotPanelExpanded,
+    setIsStreaming,
+    streamLoop,
+  ]);
 
   // 面板折叠时暂停截图，展开时自动开始（如果已连接）
   useEffect(() => {
@@ -386,29 +416,164 @@ export function ScreenshotPanel() {
     }
   }, [instanceId, setIsStreaming]);
 
-  // 全屏模态框中点击图片 → 向设备发送点击
-  const handleFullscreenClick = useCallback(
-    (e: React.MouseEvent<HTMLImageElement>) => {
+  // 点击/触控/滑动画面图片 → 向设备实时发送 touch down / move / up 或 click
+  const activePointersRef = useRef<
+    Map<
+      number,
+      {
+        contact: number;
+        startX: number;
+        startY: number;
+        lastX: number;
+        lastY: number;
+        lastMoveMs: number;
+      }
+    >
+  >(new Map());
+
+  const resolveImageCoords = (
+    clientX: number,
+    clientY: number,
+    img: HTMLImageElement | null,
+  ): { x: number; y: number; xPct: number; yPct: number } | null => {
+    if (!img) return null;
+    const rect = img.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return null;
+    const naturalW = img.naturalWidth;
+    const naturalH = img.naturalHeight;
+    if (naturalW === 0 || naturalH === 0) return null;
+
+    // 针对 object-contain 计算实际渲染的内容区（扣除黑边）
+    const imgRatio = naturalW / naturalH;
+    const boxRatio = rect.width / rect.height;
+    let renderW = rect.width;
+    let renderH = rect.height;
+    let offsetX = 0;
+    let offsetY = 0;
+    if (boxRatio > imgRatio) {
+      renderW = rect.height * imgRatio;
+      offsetX = (rect.width - renderW) / 2;
+    } else {
+      renderH = rect.width / imgRatio;
+      offsetY = (rect.height - renderH) / 2;
+    }
+
+    const relX = clientX - rect.left - offsetX;
+    const relY = clientY - rect.top - offsetY;
+    const clampedX = Math.max(0, Math.min(renderW, relX));
+    const clampedY = Math.max(0, Math.min(renderH, relY));
+
+    const x = Math.round((clampedX / renderW) * (naturalW - 1));
+    const y = Math.round((clampedY / renderH) * (naturalH - 1));
+    const xPct = Math.max(0, Math.min(100, ((clientX - rect.left) / rect.width) * 100));
+    const yPct = Math.max(0, Math.min(100, ((clientY - rect.top) / rect.height) * 100));
+    return { x, y, xPct, yPct };
+  };
+
+  const acquireTouchSlot = (): number => {
+    const used = new Set(Array.from(activePointersRef.current.values()).map((v) => v.contact));
+    for (let i = 0; i < 10; i++) {
+      if (!used.has(i)) return i;
+    }
+    return 0;
+  };
+
+  const handlePointerDown = useCallback(
+    (
+      e: React.PointerEvent<HTMLImageElement>,
+      imgRef: React.RefObject<HTMLImageElement | null>,
+      isInline: boolean,
+    ) => {
+      if (isInline && !touchClickEnabled) return;
       if (!instanceId || connectionStatus !== 'Connected') return;
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
 
-      const img = fullscreenImgRef.current;
-      if (!img) return;
+      const coords = resolveImageCoords(e.clientX, e.clientY, imgRef.current);
+      if (!coords) return;
 
-      const rect = img.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) return;
+      e.preventDefault();
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        // ignore
+      }
 
-      const clickX = e.clientX - rect.left;
-      const clickY = e.clientY - rect.top;
+      const contact = acquireTouchSlot();
+      activePointersRef.current.set(e.pointerId, {
+        contact,
+        startX: coords.x,
+        startY: coords.y,
+        lastX: coords.x,
+        lastY: coords.y,
+        lastMoveMs: performance.now(),
+      });
 
-      const naturalW = img.naturalWidth;
-      const naturalH = img.naturalHeight;
-      if (naturalW === 0 || naturalH === 0) return;
+      if (isInline) {
+        const rippleId = Date.now();
+        setClickRipple({ id: rippleId, xPct: coords.xPct, yPct: coords.yPct });
+        setTimeout(() => {
+          setClickRipple((prev) => (prev?.id === rippleId ? null : prev));
+        }, 450);
+      }
 
-      const x = Math.round((clickX / rect.width) * naturalW);
-      const y = Math.round((clickY / rect.height) * naturalH);
+      maaService.postTouch(instanceId, 'down', coords.x, coords.y, contact).catch((err) => {
+        log.warn('触控按下失败:', err);
+      });
+    },
+    [instanceId, connectionStatus, touchClickEnabled],
+  );
 
-      maaService.postClick(instanceId, x, y).catch((err) => {
-        log.warn('点击失败:', err);
+  const handlePointerMove = useCallback(
+    (
+      e: React.PointerEvent<HTMLImageElement>,
+      imgRef: React.RefObject<HTMLImageElement | null>,
+    ) => {
+      const slot = activePointersRef.current.get(e.pointerId);
+      if (!slot || !instanceId || connectionStatus !== 'Connected') return;
+
+      const coords = resolveImageCoords(e.clientX, e.clientY, imgRef.current);
+      if (!coords) return;
+
+      const now = performance.now();
+      const dx = Math.abs(coords.x - slot.lastX);
+      const dy = Math.abs(coords.y - slot.lastY);
+      if (dx < 2 && dy < 2) return;
+      if (now - slot.lastMoveMs < 16 && dx < 12 && dy < 12) return;
+
+      slot.lastX = coords.x;
+      slot.lastY = coords.y;
+      slot.lastMoveMs = now;
+
+      maaService.postTouch(instanceId, 'move', coords.x, coords.y, slot.contact).catch(() => {});
+    },
+    [instanceId, connectionStatus],
+  );
+
+  const handlePointerUpOrCancel = useCallback(
+    (
+      e: React.PointerEvent<HTMLImageElement>,
+      imgRef: React.RefObject<HTMLImageElement | null>,
+    ) => {
+      const slot = activePointersRef.current.get(e.pointerId);
+      if (!slot) return;
+      activePointersRef.current.delete(e.pointerId);
+
+      try {
+        if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+          e.currentTarget.releasePointerCapture(e.pointerId);
+        }
+      } catch {
+        // ignore
+      }
+
+      if (!instanceId || connectionStatus !== 'Connected') return;
+      const coords = resolveImageCoords(e.clientX, e.clientY, imgRef.current) ?? {
+        x: slot.lastX,
+        y: slot.lastY,
+      };
+
+      maaService.postTouch(instanceId, 'up', coords.x, coords.y, slot.contact).catch((err) => {
+        log.warn('触控抬起失败:', err);
       });
     },
     [instanceId, connectionStatus],
@@ -550,6 +715,26 @@ export function ScreenshotPanel() {
           <span className="text-sm font-medium text-text-primary">{t('screenshot.title')}</span>
         </div>
         <div className="flex items-center gap-2">
+          {/* 触控点击开关按钮 */}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setTouchClickEnabled(!touchClickEnabled);
+            }}
+            disabled={!instanceId || connectionStatus !== 'Connected'}
+            className={clsx(
+              'p-1 rounded-md transition-colors',
+              !instanceId || connectionStatus !== 'Connected'
+                ? 'text-text-muted cursor-not-allowed'
+                : touchClickEnabled
+                  ? 'text-accent bg-accent/10 hover:bg-bg-tertiary'
+                  : 'text-text-secondary hover:bg-bg-tertiary hover:text-text-primary',
+            )}
+            title={t('screenshot.clickHint')}
+          >
+            <MousePointerClick className="w-3.5 h-3.5" />
+          </button>
+
           {/* 流模式开关按钮 */}
           <button
             onClick={(e) => {
@@ -613,13 +798,31 @@ export function ScreenshotPanel() {
               {screenshotUrl ? (
                 <>
                   <img
+                    ref={inlineImgRef}
                     src={screenshotUrl}
                     alt="Screenshot"
-                    className="w-full h-full object-contain rounded-md"
+                    draggable={false}
+                    onPointerDown={(e) => handlePointerDown(e, inlineImgRef, true)}
+                    onPointerMove={(e) => handlePointerMove(e, inlineImgRef)}
+                    onPointerUp={(e) => handlePointerUpOrCancel(e, inlineImgRef)}
+                    onPointerCancel={(e) => handlePointerUpOrCancel(e, inlineImgRef)}
+                    className={clsx(
+                      'w-full h-full object-contain rounded-md select-none',
+                      touchClickEnabled &&
+                        connectionStatus === 'Connected' &&
+                        'cursor-crosshair touch-none',
+                    )}
                   />
+                  {clickRipple && (
+                    <span
+                      key={clickRipple.id}
+                      style={{ left: `${clickRipple.xPct}%`, top: `${clickRipple.yPct}%` }}
+                      className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 w-6 h-6 rounded-full border-2 border-accent bg-accent/30 animate-ping"
+                    />
+                  )}
                   {/* 流模式指示器 */}
                   {isStreaming && (
-                    <div className="absolute top-2 right-2 flex items-center gap-1 px-1.5 py-0.5 bg-success/80 rounded text-white text-xs">
+                    <div className="absolute top-2 right-2 flex items-center gap-1 px-1.5 py-0.5 bg-success/80 rounded text-white text-xs pointer-events-none">
                       <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
                       LIVE
                     </div>
@@ -648,12 +851,12 @@ export function ScreenshotPanel() {
       {/* 全屏模态框 */}
       {isFullscreen && screenshotUrl && (
         <div
-          className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-8"
+          className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-2 sm:p-8"
           onClick={toggleFullscreen}
         >
           {/* 卡片容器 */}
           <div
-            className="mxu-overlay-surface relative bg-bg-secondary rounded-xl border border-border shadow-2xl max-w-[90vw] max-h-[90vh] flex flex-col overflow-hidden"
+            className="mxu-overlay-surface relative bg-bg-secondary rounded-xl border border-border shadow-2xl max-w-[98vw] sm:max-w-[90vw] max-h-[95vh] sm:max-h-[90vh] flex flex-col overflow-hidden"
             onClick={(e) => e.stopPropagation()}
             onContextMenu={handleContextMenu}
           >
@@ -687,8 +890,12 @@ export function ScreenshotPanel() {
                 ref={fullscreenImgRef}
                 src={screenshotUrl}
                 alt="Screenshot"
-                className="max-w-full max-h-[calc(90vh-100px)] object-contain rounded-md cursor-crosshair"
-                onClick={handleFullscreenClick}
+                draggable={false}
+                onPointerDown={(e) => handlePointerDown(e, fullscreenImgRef, false)}
+                onPointerMove={(e) => handlePointerMove(e, fullscreenImgRef)}
+                onPointerUp={(e) => handlePointerUpOrCancel(e, fullscreenImgRef)}
+                onPointerCancel={(e) => handlePointerUpOrCancel(e, fullscreenImgRef)}
+                className="max-w-full max-h-[calc(90vh-100px)] object-contain rounded-md cursor-crosshair select-none touch-none"
               />
               {connectionStatus === 'Connected' && (
                 <div className="flex items-center gap-1 mt-2 text-xs text-text-muted select-none">

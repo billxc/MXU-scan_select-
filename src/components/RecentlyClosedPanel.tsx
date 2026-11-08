@@ -7,6 +7,8 @@ import type { ProjectInterface } from '@/types/interface';
 import clsx from 'clsx';
 import { getInterfaceLangKey } from '@/i18n';
 import { ConfirmDialog } from './ConfirmDialog';
+import { useIsMobile } from '@/hooks/useIsMobile';
+import { MobileSheet } from './ui/MobileSheet';
 
 interface RecentlyClosedPanelProps {
   onClose: () => void;
@@ -100,6 +102,7 @@ function formatTasksSummary(
 
 export function RecentlyClosedPanel({ onClose, anchorRef }: RecentlyClosedPanelProps) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const panelRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState({ top: 0, right: 0 });
   const [showClearConfirm, setShowClearConfirm] = useState(false);
@@ -119,17 +122,19 @@ export function RecentlyClosedPanel({ onClose, anchorRef }: RecentlyClosedPanelP
 
   // 计算面板位置
   useEffect(() => {
+    if (isMobile) return;
     if (anchorRef.current) {
       const rect = anchorRef.current.getBoundingClientRect();
       setPosition({
         top: rect.bottom + 8,
-        right: window.innerWidth - rect.right,
+        right: Math.max(8, window.innerWidth - rect.right),
       });
     }
-  }, [anchorRef]);
+  }, [anchorRef, isMobile]);
 
   // 点击外部关闭
   useEffect(() => {
+    if (isMobile) return;
     const handleClickOutside = (e: MouseEvent) => {
       if (
         panelRef.current &&
@@ -143,7 +148,7 @@ export function RecentlyClosedPanel({ onClose, anchorRef }: RecentlyClosedPanelP
 
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [onClose, anchorRef]);
+  }, [onClose, anchorRef, isMobile]);
 
   // ESC 键关闭
   useEffect(() => {
@@ -175,166 +180,203 @@ export function RecentlyClosedPanel({ onClose, anchorRef }: RecentlyClosedPanelP
     setShowClearConfirm(true);
   };
 
+  const listContent = (
+    <div className={clsx('overflow-y-auto', isMobile ? 'flex-1 min-h-0' : 'max-h-80')}>
+      {recentlyClosed.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-8 text-text-muted">
+          <History className="w-8 h-8 mb-2 opacity-50" />
+          <span className="text-sm">{t('recentlyClosed.empty')}</span>
+        </div>
+      ) : (
+        <div className="py-1">
+          {recentlyClosed.map((item) => (
+            <div
+              key={item.id}
+              onClick={() => handleReopen(item.id)}
+              className={clsx(
+                'group px-4 py-2.5 cursor-pointer',
+                'hover:bg-bg-hover transition-colors',
+              )}
+            >
+              {/* 第一行：名称 + 操作按钮 */}
+              <div className="flex items-center gap-2">
+                <div
+                  className="flex-1 text-sm font-medium text-text-primary truncate"
+                  title={item.name}
+                >
+                  {item.name}
+                </div>
+                <div className="flex items-center gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity shrink-0">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleReopen(item.id);
+                    }}
+                    className="p-1 rounded-md hover:bg-accent/10 text-accent transition-colors"
+                    title={t('recentlyClosed.reopen')}
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={(e) => handleRemove(e, item.id)}
+                    className="p-1 rounded-md hover:bg-error/10 text-text-muted hover:text-error transition-colors"
+                    title={t('recentlyClosed.remove')}
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* 第二行：控制器 · 资源 · 任务 */}
+              <div className="flex items-center gap-2 mt-1 text-xs text-text-muted">
+                {item.controllerName && (
+                  <span
+                    className="flex items-center gap-1 shrink-0"
+                    title={t('controller.title')}
+                  >
+                    <Gamepad2 className="w-3 h-3" />
+                    <span className="max-w-[80px] truncate">
+                      {getControllerLabel(
+                        item.controllerName,
+                        projectInterface,
+                        langKey,
+                        resolveI18nText,
+                      )}
+                    </span>
+                  </span>
+                )}
+                {item.controllerName && item.resourceName && (
+                  <span className="text-text-muted/50">·</span>
+                )}
+                {item.resourceName && (
+                  <span
+                    className="flex items-center gap-1 shrink-0"
+                    title={t('resource.title')}
+                  >
+                    <Package className="w-3 h-3" />
+                    <span className="max-w-[80px] truncate">
+                      {getResourceLabel(
+                        item.resourceName,
+                        projectInterface,
+                        langKey,
+                        resolveI18nText,
+                      )}
+                    </span>
+                  </span>
+                )}
+                {(item.controllerName || item.resourceName) && item.tasks.length > 0 && (
+                  <span className="text-text-muted/50">·</span>
+                )}
+                {item.tasks.length > 0 && (
+                  <span
+                    className="flex items-center gap-1 truncate"
+                    title={formatTasksSummary(
+                      item,
+                      t,
+                      projectInterface,
+                      langKey,
+                      resolveI18nText,
+                    )}
+                  >
+                    <ListChecks className="w-3 h-3 shrink-0" />
+                    <span className="truncate">
+                      {formatTasksSummary(item, t, projectInterface, langKey, resolveI18nText)}
+                    </span>
+                  </span>
+                )}
+              </div>
+
+              {/* 第三行：时间 */}
+              <div className="text-xs text-text-muted/70 mt-1">
+                <span>{formatRelativeTime(item.closedAt, t)}</span>
+                <span className="mx-1">·</span>
+                <span>{formatFullTime(item.closedAt)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <>
-      <div
-        ref={panelRef}
-        className="mxu-overlay-surface fixed z-50 w-80 bg-bg-secondary rounded-xl shadow-lg border border-border overflow-hidden animate-in"
-        style={{
-          top: position.top,
-          right: position.right,
-        }}
-      >
-        {/* 标题栏 */}
-        <div className="flex items-center justify-between px-4 py-3 bg-bg-tertiary border-b border-border">
-          <div className="flex items-center gap-2">
-            <History className="w-4 h-4 text-text-secondary" />
-            <span className="text-sm font-medium text-text-primary">
-              {t('recentlyClosed.title')}
-            </span>
-            {recentlyClosed.length > 0 && (
-              <span className="px-1.5 py-0.5 bg-bg-active text-text-muted text-xs rounded">
-                {recentlyClosed.length}
+      {isMobile ? (
+        <MobileSheet
+          open={true}
+          onClose={onClose}
+          title={
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="text-base font-semibold text-text-primary truncate">
+                {t('recentlyClosed.title')}
               </span>
-            )}
-          </div>
-          <div className="flex items-center gap-1">
-            {recentlyClosed.length > 0 && (
+              {recentlyClosed.length > 0 && (
+                <span className="px-1.5 py-0.5 bg-bg-active text-text-muted text-xs rounded">
+                  {recentlyClosed.length}
+                </span>
+              )}
+            </div>
+          }
+          icon={<History className="w-4 h-4" />}
+          headerActions={
+            recentlyClosed.length > 0 ? (
               <button
                 onClick={handleClearAll}
-                className="p-1 rounded-md hover:bg-bg-hover transition-colors text-text-muted hover:text-error"
+                className="p-1.5 rounded-md hover:bg-bg-hover transition-colors text-text-muted hover:text-error"
                 title={t('recentlyClosed.clearAll')}
               >
                 <Trash2 className="w-4 h-4" />
               </button>
-            )}
-            <button
-              onClick={onClose}
-              className="p-1 rounded-md hover:bg-bg-hover transition-colors"
-            >
-              <X className="w-4 h-4 text-text-muted" />
-            </button>
-          </div>
-        </div>
-
-        {/* 内容区 */}
-        <div className="max-h-80 overflow-y-auto">
-          {recentlyClosed.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-8 text-text-muted">
-              <History className="w-8 h-8 mb-2 opacity-50" />
-              <span className="text-sm">{t('recentlyClosed.empty')}</span>
+            ) : undefined
+          }
+        >
+          {listContent}
+        </MobileSheet>
+      ) : (
+        <div
+          ref={panelRef}
+          className="mxu-overlay-surface fixed z-50 w-80 bg-bg-secondary rounded-xl shadow-lg border border-border overflow-hidden animate-in"
+          style={{
+            top: position.top,
+            right: position.right,
+          }}
+        >
+          {/* 标题栏 */}
+          <div className="flex items-center justify-between px-4 py-3 bg-bg-tertiary border-b border-border">
+            <div className="flex items-center gap-2">
+              <History className="w-4 h-4 text-text-secondary" />
+              <span className="text-sm font-medium text-text-primary">
+                {t('recentlyClosed.title')}
+              </span>
+              {recentlyClosed.length > 0 && (
+                <span className="px-1.5 py-0.5 bg-bg-active text-text-muted text-xs rounded">
+                  {recentlyClosed.length}
+                </span>
+              )}
             </div>
-          ) : (
-            <div className="py-1">
-              {recentlyClosed.map((item) => (
-                <div
-                  key={item.id}
-                  onClick={() => handleReopen(item.id)}
-                  className={clsx(
-                    'group px-4 py-2.5 cursor-pointer',
-                    'hover:bg-bg-hover transition-colors',
-                  )}
+            <div className="flex items-center gap-1">
+              {recentlyClosed.length > 0 && (
+                <button
+                  onClick={handleClearAll}
+                  className="p-1 rounded-md hover:bg-bg-hover transition-colors text-text-muted hover:text-error"
+                  title={t('recentlyClosed.clearAll')}
                 >
-                  {/* 第一行：名称 + 操作按钮 */}
-                  <div className="flex items-center gap-2">
-                    <div
-                      className="flex-1 text-sm font-medium text-text-primary truncate"
-                      title={item.name}
-                    >
-                      {item.name}
-                    </div>
-                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleReopen(item.id);
-                        }}
-                        className="p-1 rounded-md hover:bg-accent/10 text-accent transition-colors"
-                        title={t('recentlyClosed.reopen')}
-                      >
-                        <RotateCcw className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={(e) => handleRemove(e, item.id)}
-                        className="p-1 rounded-md hover:bg-error/10 text-text-muted hover:text-error transition-colors"
-                        title={t('recentlyClosed.remove')}
-                      >
-                        <X className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* 第二行：控制器 · 资源 · 任务 */}
-                  <div className="flex items-center gap-2 mt-1 text-xs text-text-muted">
-                    {item.controllerName && (
-                      <span
-                        className="flex items-center gap-1 shrink-0"
-                        title={t('controller.title')}
-                      >
-                        <Gamepad2 className="w-3 h-3" />
-                        <span className="max-w-[80px] truncate">
-                          {getControllerLabel(
-                            item.controllerName,
-                            projectInterface,
-                            langKey,
-                            resolveI18nText,
-                          )}
-                        </span>
-                      </span>
-                    )}
-                    {item.controllerName && item.resourceName && (
-                      <span className="text-text-muted/50">·</span>
-                    )}
-                    {item.resourceName && (
-                      <span
-                        className="flex items-center gap-1 shrink-0"
-                        title={t('resource.title')}
-                      >
-                        <Package className="w-3 h-3" />
-                        <span className="max-w-[80px] truncate">
-                          {getResourceLabel(
-                            item.resourceName,
-                            projectInterface,
-                            langKey,
-                            resolveI18nText,
-                          )}
-                        </span>
-                      </span>
-                    )}
-                    {(item.controllerName || item.resourceName) && item.tasks.length > 0 && (
-                      <span className="text-text-muted/50">·</span>
-                    )}
-                    {item.tasks.length > 0 && (
-                      <span
-                        className="flex items-center gap-1 truncate"
-                        title={formatTasksSummary(
-                          item,
-                          t,
-                          projectInterface,
-                          langKey,
-                          resolveI18nText,
-                        )}
-                      >
-                        <ListChecks className="w-3 h-3 shrink-0" />
-                        <span className="truncate">
-                          {formatTasksSummary(item, t, projectInterface, langKey, resolveI18nText)}
-                        </span>
-                      </span>
-                    )}
-                  </div>
-
-                  {/* 第三行：时间 */}
-                  <div className="text-xs text-text-muted/70 mt-1">
-                    <span>{formatRelativeTime(item.closedAt, t)}</span>
-                    <span className="mx-1">·</span>
-                    <span>{formatFullTime(item.closedAt)}</span>
-                  </div>
-                </div>
-              ))}
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              )}
+              <button
+                onClick={onClose}
+                className="p-1 rounded-md hover:bg-bg-hover transition-colors"
+              >
+                <X className="w-4 h-4 text-text-muted" />
+              </button>
             </div>
-          )}
+          </div>
+
+          {/* 内容区 */}
+          {listContent}
         </div>
-      </div>
+      )}
 
       <ConfirmDialog
         open={showClearConfirm}

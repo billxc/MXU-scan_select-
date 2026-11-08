@@ -24,6 +24,7 @@ import { LinuxInputMethod, parseLinuxInputMethod } from '@/types/maa';
 import type { AdbDevice, Win32Window, GamescopeInstance, ControllerConfig } from '@/types/maa';
 import type { ControllerItem, ResourceItem } from '@/types/interface';
 import { computeResourcePaths } from '@/utils/resourcePath';
+import { getMuMuBinding, sameMuMuInstance, saveAdbDevice } from '@/utils/mumu';
 import { buildPlayCoverControllerConfig } from '@/utils/playCoverController';
 import { hasValidUinputDimensions, parseUinputDimension } from '@/utils/linuxUinput';
 import {
@@ -42,9 +43,12 @@ import {
   waitForResResult,
   autoReconnectAttempted,
 } from './connection';
+import { useIsMobile } from '@/hooks/useIsMobile';
+import { MobileSheet } from './ui/MobileSheet';
 
 export function ConnectionPanel() {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const {
     projectInterface,
     basePath,
@@ -134,25 +138,29 @@ export function ConnectionPanel() {
     width: number;
   } | null>(null);
 
-  // 计算下拉框位置（向下展开）
+  // 计算下拉框位置（向下展开，自动限制在视口内）
   const calcDropdownPosition = useCallback((ref: React.RefObject<HTMLButtonElement | null>) => {
     if (!ref.current) return null;
     const rect = ref.current.getBoundingClientRect();
+    const width = Math.min(rect.width, window.innerWidth - 16);
+    const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
     return {
       top: rect.bottom + 4,
-      left: rect.left,
-      width: rect.width,
+      left,
+      width,
     };
   }, []);
 
-  // 计算下拉框位置（向上展开）
+  // 计算下拉框位置（向上展开，若上方空间不足则向下展开）
   const calcDropdownPositionUp = useCallback((ref: React.RefObject<HTMLButtonElement | null>) => {
     if (!ref.current) return null;
     const rect = ref.current.getBoundingClientRect();
+    const width = Math.min(rect.width, window.innerWidth - 16);
+    const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
     return {
       top: rect.top,
-      left: rect.left,
-      width: rect.width,
+      left,
+      width,
     };
   }, []);
 
@@ -346,6 +354,13 @@ export function ConnectionPanel() {
     }
   }, [storedResourceLoaded, isLoadingResource, currentResourceName]);
 
+  // 移动端：当设备已连接且资源已加载完成时，自动收起连接配置详情，仅保留顶部状态摘要栏以让出屏幕空间
+  useEffect(() => {
+    if (isMobile && isConnected && isResourceLoaded) {
+      setConnectionPanelExpanded(false);
+    }
+  }, [isMobile, isConnected, isResourceLoaded, setConnectionPanelExpanded]);
+
   // 判断是否需要搜索设备（PlayCover 不需要搜索）
   const needsDeviceSearch =
     controllerType === 'Adb' ||
@@ -395,6 +410,48 @@ export function ConnectionPanel() {
     if (hasHistoricalDevice && needsDeviceSearch) {
       // 标记该实例已尝试过自动重连
       autoReconnectAttempted.add(instanceId);
+
+      // 当配置了 MuMu 模拟器设备时，先通过 MuMuManager 接口检查虚拟机是否存在及是否已启动：
+      // - 若保存的虚拟机已在运行，或当前用户换了另一个正在运行的虚拟机，触发 handleSearch 进行匹配或唯一在线虚拟机回退；
+      // - 若保存的虚拟机不存在，提示未找到上次保存的设备并扫描当前在线设备。
+      if (controllerType === 'Adb' && savedDevice?.mumu) {
+        void (async () => {
+          const status = await maaService.queryMuMuStatus(savedDevice.mumu!);
+          if (!status.exists) {
+            setDeviceError(t('controller.savedDeviceNotFound'));
+            void handleSearch();
+            return;
+          }
+          if (status.is_process_started && status.is_android_started) {
+            void handleSearch();
+            return;
+          }
+          // 保存的旧虚拟机未运行：静默探测是否有其他唯一正在运行的设备（用户手动换了虚拟机启动）
+          try {
+            const devices = await maaService.findAdbDevices();
+            setCachedAdbDevices(devices);
+            const activeDevices: AdbDevice[] = [];
+            for (const d of devices) {
+              const b = getMuMuBinding(d.config);
+              if (b) {
+                const st = await maaService.queryMuMuStatus(b);
+                if (st.exists && st.is_process_started && st.is_android_started) {
+                  activeDevices.push(d);
+                }
+              } else {
+                activeDevices.push(d);
+              }
+            }
+            if (activeDevices.length === 1) {
+              handleSelectAdbDevice(activeDevices[0]);
+            }
+          } catch {
+            // ignore
+          }
+        })();
+        return;
+      }
+
       // 触发搜索并自动连接（handleSearch 内部已有匹配+自动连接逻辑）
       handleSearch();
     } else if (hasHistoricalDevice && controllerType === 'PlayCover') {
@@ -440,13 +497,69 @@ export function ConnectionPanel() {
         // 2. 如果没有保存的设备信息（首次使用）且扫描到设备 → 自动连接第一个
         // 3. 如果有保存的设备但匹配不到 → 显示下拉框让用户选择
         let autoSelected: AdbDevice | null = null;
-        if (savedDevice?.adbDeviceName) {
-          autoSelected = findMatchingAdbDevice(devices, savedDevice, true) || null;
+        if (savedDevice?.adbDeviceName || savedDevice?.adbDeviceAddress || savedDevice?.mumu) {
+          const matched = findMatchingAdbDevice(devices, savedDevice, true) || null;
+          // 如果保存的是 MuMu 设备，除了校验 extras.mumu 匹配外，还需通过 queryMuMuStatus 确认模拟器实际正在运行，
+          // 防止僵尸 MuMuNxDevice 进程导致 MaaToolkit 误报假端口（如 16481）并触发连接拒绝报错。
+          if (matched && savedDevice.mumu) {
+            const matchedBinding = getMuMuBinding(matched.config);
+            if (matchedBinding && sameMuMuInstance(matchedBinding, savedDevice.mumu)) {
+              const status = await maaService.queryMuMuStatus(savedDevice.mumu);
+              if (status.exists && status.is_process_started && status.is_android_started) {
+                autoSelected = matched;
+              }
+            }
+          } else if (matched) {
+            const matchedBinding = getMuMuBinding(matched.config);
+            if (matchedBinding) {
+              const status = await maaService.queryMuMuStatus(matchedBinding);
+              if (status.exists && status.is_process_started && status.is_android_started) {
+                autoSelected = matched;
+              }
+            } else {
+              autoSelected = matched;
+            }
+          }
+
+          // 若保存的旧虚拟机未运行，但当前恰好只有 1 台正在运行的设备（用户换了虚拟机启动），自动选中并切换过去
+          if (!autoSelected && devices.length > 0) {
+            const activeDevices: AdbDevice[] = [];
+            for (const d of devices) {
+              const b = getMuMuBinding(d.config);
+              if (b) {
+                const st = await maaService.queryMuMuStatus(b);
+                if (st.exists && st.is_process_started && st.is_android_started) {
+                  activeDevices.push(d);
+                }
+              } else {
+                activeDevices.push(d);
+              }
+            }
+            if (activeDevices.length === 1) {
+              autoSelected = activeDevices[0];
+              if (instanceId) {
+                addLog(instanceId, {
+                  type: 'info',
+                  message: t('taskList.autoConnect.autoSelectedDevice', {
+                    name: autoSelected.name || autoSelected.address,
+                  }),
+                });
+              }
+            }
+          }
         } else if (devices.length > 0) {
-          // 没有保存设备时自动选择第一个
-          autoSelected = devices[0];
-          // 给出首次自动匹配提示
-          if (instanceId) {
+          // 没有保存设备时自动选择第一个（若第一个是未实际运行的 MuMu 僵尸条目则跳过自动连接）
+          const first = devices[0];
+          const firstBinding = getMuMuBinding(first.config);
+          if (firstBinding) {
+            const status = await maaService.queryMuMuStatus(firstBinding);
+            if (status.exists && status.is_process_started && status.is_android_started) {
+              autoSelected = first;
+            }
+          } else {
+            autoSelected = first;
+          }
+          if (autoSelected && instanceId) {
             addLog(instanceId, {
               type: 'info',
               message: t('taskList.autoConnect.autoSelectedDevice', {
@@ -880,11 +993,10 @@ export function ConnectionPanel() {
     setSelectedAdbDevice(device);
     setShowDeviceDropdown(false);
 
-    // 保存设备名称和地址到实例配置。
-    setInstanceSavedDevice(instanceId, {
-      adbDeviceName: device.name,
-      adbDeviceAddress: device.address,
-    });
+    const appState = useAppStore.getState();
+    const previous = appState.instances.find((i) => i.id === instanceId);
+    const saved = saveAdbDevice(device, previous?.savedDevice?.mumu);
+    setInstanceSavedDevice(instanceId, saved);
 
     // 自动连接
     setIsConnecting(true);
@@ -1159,16 +1271,42 @@ export function ConnectionPanel() {
         const devices = await maaService.findAdbDevices();
         setCachedAdbDevices(devices);
 
-        // 尝试匹配保存的设备信息
-        if (savedDevice?.adbDeviceName) {
+        // 尝试匹配保存的设备信息（若为 MuMu 设备需确认已实际启动）
+        if (savedDevice?.adbDeviceName || savedDevice?.adbDeviceAddress || savedDevice?.mumu) {
           const matched = findMatchingAdbDevice(devices, savedDevice);
           if (matched) {
-            // 找到匹配的，自动连接
+            const matchedBinding = getMuMuBinding(matched.config);
+            const isMatchedRunning = matchedBinding
+              ? await maaService
+                  .queryMuMuStatus(matchedBinding)
+                  .then((st) => st.exists && st.is_process_started && st.is_android_started)
+                  .catch(() => false)
+              : true;
+            if (isMatchedRunning) {
+              setIsSearching(false);
+              handleSelectAdbDevice(matched);
+              return;
+            }
+          }
+          // 保存的旧虚拟机未运行：若当前恰好只有 1 台正在运行的设备（用户换了虚拟机），自动连接该设备
+          const activeDevices: AdbDevice[] = [];
+          for (const d of devices) {
+            const b = getMuMuBinding(d.config);
+            if (b) {
+              const st = await maaService.queryMuMuStatus(b);
+              if (st.exists && st.is_process_started && st.is_android_started) {
+                activeDevices.push(d);
+              }
+            } else {
+              activeDevices.push(d);
+            }
+          }
+          if (activeDevices.length === 1) {
             setIsSearching(false);
-            handleSelectAdbDevice(matched);
+            handleSelectAdbDevice(activeDevices[0]);
             return;
           }
-          // 没找到匹配的，显示错误提示
+          // 没找到匹配的运行中设备，显示错误提示
           setDeviceError(t('controller.savedDeviceNotFound'));
         }
 
@@ -1733,64 +1871,128 @@ export function ConnectionPanel() {
                     />
                   </button>
 
-                  {/* 下拉菜单 - 使用 fixed 定位避免被父容器裁剪 */}
-                  {showDeviceDropdown && deviceDropdownPos && (
-                    <div
-                      ref={deviceMenuRef}
-                      className="mxu-overlay-surface fixed z-[100] bg-bg-secondary border border-border rounded-lg shadow-lg max-h-48 overflow-y-auto"
-                      style={{
-                        top: deviceDropdownPos.top,
-                        left: deviceDropdownPos.left,
-                        width: deviceDropdownPos.width,
-                      }}
+                  {/* 下拉菜单 - 移动端使用 Bottom Sheet，桌面端使用 fixed 下拉菜单 */}
+                  {isMobile ? (
+                    <MobileSheet
+                      open={showDeviceDropdown}
+                      onClose={() => setShowDeviceDropdown(false)}
+                      title={t('controller.selectController')}
                     >
-                      {deviceList.length > 0 ? (
-                        deviceList.map((item) => (
-                          <button
-                            key={item.id}
-                            onClick={item.onClick}
-                            className={clsx(
-                              'w-full flex items-center justify-between px-2.5 py-1.5 text-left transition-colors',
-                              'hover:bg-bg-hover',
-                              item.selected && !item.isHistorical && 'bg-accent/10',
-                              item.isHistorical && 'bg-amber-500/10',
-                            )}
-                          >
-                            <div className="min-w-0 flex-1 flex items-center gap-2">
-                              {item.isHistorical && (
-                                <History className="w-3.5 h-3.5 text-warning flex-shrink-0" />
+                      <div className="overflow-y-auto flex-1 min-h-0 divide-y divide-border/40 px-2 py-1">
+                        {deviceList.length > 0 ? (
+                          deviceList.map((item) => (
+                            <button
+                              key={item.id}
+                              type="button"
+                              onClick={() => {
+                                item.onClick();
+                                setShowDeviceDropdown(false);
+                              }}
+                              className={clsx(
+                                'w-full flex items-center justify-between px-3.5 py-3 text-left rounded-xl transition-colors',
+                                item.selected && !item.isHistorical
+                                  ? 'bg-accent/12 text-accent'
+                                  : item.isHistorical
+                                    ? 'bg-amber-500/10'
+                                    : 'active:bg-bg-hover',
                               )}
-                              <div className="min-w-0 flex-1">
-                                <div className="text-sm text-text-primary truncate">
-                                  {item.name}
-                                </div>
-                                <div
-                                  className={clsx(
-                                    'text-xs truncate',
-                                    item.isHistorical ? 'text-warning' : 'text-text-muted',
-                                  )}
-                                >
-                                  {item.description}
+                            >
+                              <div className="min-w-0 flex-1 flex items-center gap-2.5">
+                                {item.isHistorical && (
+                                  <History className="w-4 h-4 text-warning flex-shrink-0" />
+                                )}
+                                <div className="min-w-0 flex-1">
+                                  <div className="text-base text-text-primary truncate font-medium">
+                                    {item.name}
+                                  </div>
+                                  <div
+                                    className={clsx(
+                                      'text-xs truncate mt-0.5',
+                                      item.isHistorical ? 'text-warning' : 'text-text-muted',
+                                    )}
+                                  >
+                                    {item.description}
+                                  </div>
                                 </div>
                               </div>
-                            </div>
-                            {item.selected && !item.isHistorical && (
-                              <Check className="w-4 h-4 text-accent flex-shrink-0 ml-2" />
-                            )}
-                          </button>
-                        ))
-                      ) : (
-                        <div className="px-3 py-3 text-center text-text-muted text-xs">
-                          {isSearching
-                            ? t('common.loading')
-                            : isConnected
-                              ? t('controller.connected')
-                              : isDesktopWindowController
-                                ? t('controller.noWindows')
-                                : t('controller.noDevices')}
-                        </div>
-                      )}
-                    </div>
+                              {item.selected && !item.isHistorical && (
+                                <Check className="w-5 h-5 text-accent flex-shrink-0 ml-2" />
+                              )}
+                            </button>
+                          ))
+                        ) : (
+                          <div className="px-3 py-8 text-center text-text-muted text-sm">
+                            {isSearching
+                              ? t('common.loading')
+                              : isConnected
+                                ? t('controller.connected')
+                                : isDesktopWindowController
+                                  ? t('controller.noWindows')
+                                  : t('controller.noDevices')}
+                          </div>
+                        )}
+                      </div>
+                    </MobileSheet>
+                  ) : (
+                    showDeviceDropdown &&
+                    deviceDropdownPos && (
+                      <div
+                        ref={deviceMenuRef}
+                        className="mxu-overlay-surface fixed z-[100] bg-bg-secondary border border-border rounded-lg shadow-lg max-h-48 overflow-y-auto"
+                        style={{
+                          top: deviceDropdownPos.top,
+                          left: deviceDropdownPos.left,
+                          width: deviceDropdownPos.width,
+                        }}
+                      >
+                        {deviceList.length > 0 ? (
+                          deviceList.map((item) => (
+                            <button
+                              key={item.id}
+                              onClick={item.onClick}
+                              className={clsx(
+                                'w-full flex items-center justify-between px-2.5 py-1.5 text-left transition-colors',
+                                'hover:bg-bg-hover',
+                                item.selected && !item.isHistorical && 'bg-accent/10',
+                                item.isHistorical && 'bg-amber-500/10',
+                              )}
+                            >
+                              <div className="min-w-0 flex-1 flex items-center gap-2">
+                                {item.isHistorical && (
+                                  <History className="w-3.5 h-3.5 text-warning flex-shrink-0" />
+                                )}
+                                <div className="min-w-0 flex-1">
+                                  <div className="text-sm text-text-primary truncate">
+                                    {item.name}
+                                  </div>
+                                  <div
+                                    className={clsx(
+                                      'text-xs truncate',
+                                      item.isHistorical ? 'text-warning' : 'text-text-muted',
+                                    )}
+                                  >
+                                    {item.description}
+                                  </div>
+                                </div>
+                              </div>
+                              {item.selected && !item.isHistorical && (
+                                <Check className="w-4 h-4 text-accent flex-shrink-0 ml-2" />
+                              )}
+                            </button>
+                          ))
+                        ) : (
+                          <div className="px-3 py-3 text-center text-text-muted text-xs">
+                            {isSearching
+                              ? t('common.loading')
+                              : isConnected
+                                ? t('controller.connected')
+                                : isDesktopWindowController
+                                  ? t('controller.noWindows')
+                                  : t('controller.noDevices')}
+                          </div>
+                        )}
+                      </div>
+                    )
                   )}
                 </div>
 
@@ -1898,65 +2100,135 @@ export function ConnectionPanel() {
                 );
               })()}
 
-              {/* 资源下拉菜单 - 使用 fixed 定位向上展开 */}
-              {showResourceDropdown && resourceDropdownPos && (
-                <div
-                  ref={resourceMenuRef}
-                  className="mxu-overlay-surface fixed z-[100] bg-bg-secondary border border-border rounded-lg shadow-lg max-h-48 overflow-y-auto"
-                  style={{
-                    bottom: window.innerHeight - resourceDropdownPos.top + 4,
-                    left: resourceDropdownPos.left,
-                    width: resourceDropdownPos.width,
-                  }}
+              {/* 资源下拉菜单 - 移动端使用 Bottom Sheet，桌面端自适应展开 */}
+              {isMobile ? (
+                <MobileSheet
+                  open={showResourceDropdown}
+                  onClose={() => setShowResourceDropdown(false)}
+                  title={t('resource.selectResource')}
                 >
-                  {allResources.map((resource) => {
-                    const { isIncompatible, reason } = getResourceCompatibility(resource);
-                    const isSelected = currentResourceName === resource.name;
+                  <div className="overflow-y-auto flex-1 min-h-0 divide-y divide-border/40 px-2 py-1">
+                    {allResources.map((resource) => {
+                      const { isIncompatible, reason } = getResourceCompatibility(resource);
+                      const isSelected = currentResourceName === resource.name;
 
-                    return (
-                      <button
-                        key={resource.name}
-                        onClick={() => !isIncompatible && handleResourceSelect(resource)}
-                        disabled={isIncompatible}
-                        className={clsx(
-                          'w-full flex items-center justify-between px-2.5 py-1.5 text-left transition-colors',
-                          isIncompatible
-                            ? 'opacity-60 cursor-not-allowed'
-                            : 'hover:bg-bg-hover cursor-pointer',
-                          isSelected && !isIncompatible && 'bg-accent/10',
-                        )}
-                        title={isIncompatible ? reason : undefined}
-                      >
-                        <div className="min-w-0 flex-1">
-                          <div
-                            className={clsx(
-                              'text-sm truncate flex items-center gap-1.5',
-                              isIncompatible ? 'text-text-muted' : 'text-text-primary',
-                            )}
-                          >
-                            {isIncompatible && (
-                              <AlertCircle className="w-3.5 h-3.5 text-warning flex-shrink-0" />
-                            )}
-                            <span className="truncate">{getResourceDisplayName(resource)}</span>
-                          </div>
-                          {/* 描述或不兼容提示 */}
-                          {isIncompatible ? (
-                            <div className="text-xs text-warning truncate">{reason}</div>
-                          ) : (
-                            resource.description && (
-                              <div className="text-xs text-text-muted truncate">
-                                {resolveI18nText(resource.description, translations)}
-                              </div>
-                            )
+                      return (
+                        <button
+                          key={resource.name}
+                          type="button"
+                          onClick={() => {
+                            if (isIncompatible) return;
+                            handleResourceSelect(resource);
+                            setShowResourceDropdown(false);
+                          }}
+                          disabled={isIncompatible}
+                          className={clsx(
+                            'w-full flex items-center justify-between px-3.5 py-3 text-left rounded-xl transition-colors',
+                            isIncompatible
+                              ? 'opacity-60 cursor-not-allowed'
+                              : 'active:bg-bg-hover',
+                            isSelected && !isIncompatible && 'bg-accent/12 text-accent',
                           )}
-                        </div>
-                        {isSelected && !isIncompatible && (
-                          <Check className="w-4 h-4 text-accent flex-shrink-0 ml-2" />
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div
+                              className={clsx(
+                                'text-base font-medium truncate flex items-center gap-1.5',
+                                isIncompatible ? 'text-text-muted' : 'text-text-primary',
+                              )}
+                            >
+                              {isIncompatible && (
+                                <AlertCircle className="w-4 h-4 text-warning flex-shrink-0" />
+                              )}
+                              <span className="truncate">{getResourceDisplayName(resource)}</span>
+                            </div>
+                            {isIncompatible ? (
+                              <div className="text-xs text-warning truncate mt-0.5">{reason}</div>
+                            ) : (
+                              resource.description && (
+                                <div className="text-xs text-text-muted truncate mt-0.5">
+                                  {resolveI18nText(resource.description, translations)}
+                                </div>
+                              )
+                            )}
+                          </div>
+                          {isSelected && !isIncompatible && (
+                            <Check className="w-5 h-5 text-accent flex-shrink-0 ml-2" />
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </MobileSheet>
+              ) : (
+                showResourceDropdown &&
+                resourceDropdownPos && (
+                  <div
+                    ref={resourceMenuRef}
+                    className="mxu-overlay-surface fixed z-[100] bg-bg-secondary border border-border rounded-lg shadow-lg max-h-60 overflow-y-auto"
+                    style={
+                      resourceDropdownPos.top < 220
+                        ? {
+                            top: resourceDropdownPos.top + 38,
+                            left: resourceDropdownPos.left,
+                            width: resourceDropdownPos.width,
+                          }
+                        : {
+                            bottom: window.innerHeight - resourceDropdownPos.top + 4,
+                            left: resourceDropdownPos.left,
+                            width: resourceDropdownPos.width,
+                          }
+                    }
+                  >
+                    {allResources.map((resource) => {
+                      const { isIncompatible, reason } = getResourceCompatibility(resource);
+                      const isSelected = currentResourceName === resource.name;
+
+                      return (
+                        <button
+                          key={resource.name}
+                          onClick={() => !isIncompatible && handleResourceSelect(resource)}
+                          disabled={isIncompatible}
+                          className={clsx(
+                            'w-full flex items-center justify-between px-2.5 py-1.5 text-left transition-colors',
+                            isIncompatible
+                              ? 'opacity-60 cursor-not-allowed'
+                              : 'hover:bg-bg-hover cursor-pointer',
+                            isSelected && !isIncompatible && 'bg-accent/10',
+                          )}
+                          title={isIncompatible ? reason : undefined}
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div
+                              className={clsx(
+                                'text-sm truncate flex items-center gap-1.5',
+                                isIncompatible ? 'text-text-muted' : 'text-text-primary',
+                              )}
+                            >
+                              {isIncompatible && (
+                                <AlertCircle className="w-3.5 h-3.5 text-warning flex-shrink-0" />
+                              )}
+                              <span className="truncate">{getResourceDisplayName(resource)}</span>
+                            </div>
+                            {/* 描述或不兼容提示 */}
+                            {isIncompatible ? (
+                              <div className="text-xs text-warning truncate">{reason}</div>
+                            ) : (
+                              resource.description && (
+                                <div className="text-xs text-text-muted truncate">
+                                  {resolveI18nText(resource.description, translations)}
+                                </div>
+                              )
+                            )}
+                          </div>
+                          {isSelected && !isIncompatible && (
+                            <Check className="w-4 h-4 text-accent flex-shrink-0 ml-2" />
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )
               )}
             </div>
 

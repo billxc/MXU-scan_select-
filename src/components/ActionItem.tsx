@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronRight, X, GripVertical } from 'lucide-react';
+import { ChevronRight, X, GripVertical, MoreVertical, SlidersHorizontal } from 'lucide-react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { useAppStore } from '@/stores/appStore';
@@ -10,6 +10,8 @@ import { buildListItemMenuItems, InlineNameEditor } from './listItemShared';
 import type { ActionConfig } from '@/types/interface';
 import clsx from 'clsx';
 import { FileField, TextField, SwitchField, NumberField } from './FormControls';
+import { useIsMobile } from '@/hooks/useIsMobile';
+import { MobileSheet } from './ui/MobileSheet';
 
 interface ActionItemProps {
   instanceId: string;
@@ -57,6 +59,7 @@ export function ActionItem({
   total,
 }: ActionItemProps) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const {
     updatePreAction,
     removePreAction,
@@ -129,6 +132,16 @@ export function ActionItem({
   // 右键菜单
   const handleContextMenu = useCallback(
     (e: React.MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target?.tagName === 'INPUT' ||
+        target?.tagName === 'TEXTAREA' ||
+        target?.isContentEditable ||
+        target?.closest('input, textarea, [contenteditable="true"]')
+      ) {
+        e.stopPropagation();
+        return;
+      }
       e.preventDefault();
       e.stopPropagation();
 
@@ -189,7 +202,7 @@ export function ActionItem({
     <div
       ref={setNodeRef}
       style={style}
-      onContextMenu={handleContextMenu}
+      onContextMenu={isMobile ? undefined : handleContextMenu}
       className={clsx(
         'group rounded-lg border overflow-hidden transition-shadow flex-shrink-0',
         currentAction.enabled
@@ -270,7 +283,7 @@ export function ActionItem({
                 onClick={() => setExpanded(!expanded)}
                 className="flex-1 min-w-0 flex items-center self-stretch min-h-[28px] cursor-pointer"
               >
-                {!expanded && (
+                {(isMobile || !expanded) && (
                   <div className="flex-1 flex items-center gap-1.5 mx-2 overflow-hidden">
                     {hasConfig ? (
                       <>
@@ -289,18 +302,42 @@ export function ActionItem({
                     ) : null}
                   </div>
                 )}
-                <div className="flex shrink-0 items-center justify-end pl-2 ml-auto">
-                  <ChevronRight
-                    className={clsx(
-                      'w-4 h-4 text-text-secondary transition-transform duration-150 ease-out',
-                      expanded && 'rotate-90',
-                    )}
-                  />
+                <div className="flex shrink-0 items-center justify-end pl-1 sm:pl-2 ml-auto">
+                  {isMobile ? (
+                    <span
+                      className={clsx(
+                        'inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-colors',
+                        expanded
+                          ? 'bg-accent text-white'
+                          : 'bg-bg-tertiary text-text-secondary active:bg-bg-hover',
+                      )}
+                    >
+                      <SlidersHorizontal className="w-3.5 h-3.5" />
+                    </span>
+                  ) : (
+                    <ChevronRight
+                      className={clsx(
+                        'w-4 h-4 text-text-secondary transition-transform duration-150 ease-out',
+                        expanded && 'rotate-90',
+                      )}
+                    />
+                  )}
                 </div>
               </div>
             </>
           )}
         </div>
+
+        {/* 移动端更多操作按钮 */}
+        {!isEditing && (
+          <button
+            onClick={(e) => handleContextMenu(e)}
+            className="sm:hidden p-1.5 rounded-md text-text-muted hover:bg-bg-hover hover:text-text-primary transition-colors"
+            title={t('common.edit')}
+          >
+            <MoreVertical className="w-4 h-4" />
+          </button>
+        )}
 
         {/* 删除按钮 */}
         {!disabled && !isEditing && (
@@ -310,7 +347,7 @@ export function ActionItem({
               handleRemove();
             }}
             className={clsx(
-              'p-1 rounded opacity-0 group-hover:opacity-100 transition-all',
+              'p-1.5 sm:p-1 rounded opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all',
               'text-text-muted hover:bg-error/10 hover:text-error',
             )}
             title={t('common.delete')}
@@ -320,13 +357,75 @@ export function ActionItem({
         )}
       </div>
 
-      {/* 展开面板 */}
-      <div
-        className="grid transition-[grid-template-rows] duration-150 ease-out"
-        style={{ gridTemplateRows: expanded ? '1fr' : '0fr' }}
-      >
-        <div className={clsx('min-h-0', expanded ? 'overflow-visible' : 'overflow-hidden')}>
-          <div className="border-t border-border bg-bg-tertiary p-3 space-y-3">
+      {/* 桌面端原位展开面板 */}
+      {!isMobile && (
+        <div
+          className="grid transition-[grid-template-rows] duration-150 ease-out"
+          style={{ gridTemplateRows: expanded ? '1fr' : '0fr' }}
+        >
+          <div className={clsx('min-h-0', expanded ? 'overflow-visible' : 'overflow-hidden')}>
+            <div className="border-t border-border bg-bg-tertiary p-3 space-y-3">
+              <FileField
+                label={t('action.program')}
+                value={currentAction.program}
+                onChange={(v) => updateAction({ program: v })}
+                placeholder={t('action.programPlaceholder')}
+                disabled={disabled}
+              />
+              <TextField
+                label={t('action.args')}
+                value={currentAction.args}
+                onChange={(v) => updateAction({ args: v })}
+                placeholder={t('action.argsPlaceholder')}
+                disabled={disabled}
+              />
+              <SwitchField
+                label={t('action.waitForExit')}
+                hint={t('action.waitForExitHintPre')}
+                value={currentAction.waitForExit}
+                onChange={(v) => updateAction({ waitForExit: v })}
+                disabled={disabled}
+              />
+              <SwitchField
+                label={t('action.skipIfRunning')}
+                hint={t('action.skipIfRunningHint')}
+                value={currentAction.skipIfRunning}
+                onChange={(v) => updateAction({ skipIfRunning: v })}
+                disabled={disabled}
+              />
+              {isWindowsBackend && (
+                <SwitchField
+                  label={t('action.useCmd')}
+                  hint={t('action.useCmdHint')}
+                  value={currentAction.useCmd}
+                  onChange={(v) => updateAction({ useCmd: v })}
+                  disabled={disabled}
+                />
+              )}
+              <NumberField
+                label={t('action.startupDelay')}
+                hint={t('action.startupDelayHint')}
+                value={currentAction.startupDelay ?? 0}
+                onChange={(v) => updateAction({ startupDelay: v })}
+                min={0}
+                max={300}
+                suffix={t('action.startupDelaySuffix')}
+                disabled={disabled}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 移动端专属：前置程序配置 Bottom Sheet */}
+      {isMobile && (
+        <MobileSheet
+          open={expanded}
+          onClose={() => setExpanded(false)}
+          title={displayName}
+          icon={<SlidersHorizontal className="w-4 h-4" />}
+        >
+          <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4 bg-bg-tertiary/50">
             <FileField
               label={t('action.program')}
               value={currentAction.program}
@@ -375,8 +474,8 @@ export function ActionItem({
               disabled={disabled}
             />
           </div>
-        </div>
-      </div>
+        </MobileSheet>
+      )}
 
       {/* 右键菜单 */}
       {menuState.isOpen && (

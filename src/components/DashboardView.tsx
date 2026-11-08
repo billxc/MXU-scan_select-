@@ -21,31 +21,27 @@ import {
   AlignRight,
   ZoomIn,
   ZoomOut,
+  MoreVertical,
+  Plus,
+  Edit3,
+  Trash2,
+  Check,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useAppStore } from '@/stores/appStore';
 import { maaService } from '@/services/maaService';
-import { buildTaskOptionSummary } from '@/services/telemetryService';
-import { collectPasswordPlaintextsFromRunnableTasks } from '@/utils/passwordOptionValues';
 import { ContextMenu, useContextMenu, type MenuItem } from './ContextMenu';
+import { ConfirmDialog } from './ConfirmDialog';
 import { FrameRateSelector, getFrameInterval } from './FrameRateSelector';
+import { isMuMuSavedDevice } from '@/utils/mumu';
 import { resolveI18nText } from '@/services/contentResolver';
-import { loggers, generateTaskPipelineOverride } from '@/utils';
-import type { TaskConfig } from '@/types/maa';
-import { normalizeAgentConfigs } from '@/types/interface';
-import type { PretaskItem } from '@/types/interface';
+import { loggers } from '@/utils';
 import { getLinuxDeviceName } from '@/utils/controller';
 import { getInterfaceLangKey } from '@/i18n';
-import { getMxuSpecialTask } from '@/types/specialTasks';
-import { isTaskCompatible } from '@/stores/helpers';
-import { isPretaskName, getPretaskItem, buildPretaskArgs, buildPretaskDef } from '@/types/pretasks';
-import { startGlobalCallbackListener } from '@/components/connection/callbackCache';
 import { stopInstanceTasks } from '@/services/taskStopService';
-import { buildPiEnvVars } from '@/utils/piEnv';
-import {
-  formatCheckboxCountViolation,
-  validateInstanceCheckboxCounts,
-} from '@/utils/checkboxOptionValidation';
+import { taskStartService } from '@/services/taskStartService';
+import { isTaskSelectedForRun } from '@/utils/taskRunFilter';
+import { useIsMobile } from '@/hooks/useIsMobile';
 
 const log = loggers.ui;
 
@@ -58,8 +54,10 @@ interface InstanceCardProps {
 
 function InstanceCard({ instanceId, instanceName, isActive, onSelect }: InstanceCardProps) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const {
     instances,
+    cachedAdbDevices,
     instanceConnectionStatus,
     instanceTaskStatus,
     instanceScreenshotStreaming,
@@ -71,65 +69,56 @@ function InstanceCard({ instanceId, instanceName, isActive, onSelect }: Instance
     interfaceTranslations,
     language,
     instanceTaskRunStatus,
-    instanceResourceLoaded,
     resolveI18nText: storeResolveI18nText,
-    // 任务控制相关
-    updateInstance,
-    setInstanceTaskStatus,
-    setInstanceCurrentTaskId,
-    clearScheduleExecution,
-    basePath,
-    registerTaskIdName,
-    registerEntryTaskName,
     screenshotFrameRate,
-    setShowAddTaskPanel,
-    addLog,
-    tcpCompatMode,
-    maaVersion,
+    duplicateInstance,
+    renameInstance,
+    startTabCloseAnimation,
+    confirmBeforeDelete,
   } = useAppStore();
 
   const langKey = getInterfaceLangKey(language);
   const translations = interfaceTranslations[langKey];
 
-  const { state: menuState, show: showMenu, hide: hideMenu } = useContextMenu();
+  const { state: menuState, show: showMenu, showAt: showMenuAt, hide: hideMenu } = useContextMenu();
 
   const [screenshotUrl, setScreenshotUrl] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [showCloseConfirm, setShowCloseConfirm] = useState(false);
   const streamingRef = useRef(false);
   const lastFrameTimeRef = useRef(0);
-  const frameIntervalRef = useRef(getFrameInterval(screenshotFrameRate));
 
-  // 帧率配置变化时更新帧间隔
+  // 获取当前实例
+  const instance = instances.find((i) => i.id === instanceId);
+  const isMuMu = isMuMuSavedDevice(instance?.savedDevice, cachedAdbDevices);
+  const frameIntervalRef = useRef(getFrameInterval(screenshotFrameRate, isMuMu));
+
+  // 帧率配置或 MuMu 状态变化时更新帧间隔
   useEffect(() => {
-    frameIntervalRef.current = getFrameInterval(screenshotFrameRate);
-  }, [screenshotFrameRate]);
+    frameIntervalRef.current = getFrameInterval(screenshotFrameRate, isMuMu);
+  }, [screenshotFrameRate, isMuMu]);
 
   const connectionStatus = instanceConnectionStatus[instanceId];
   const taskStatus = instanceTaskStatus[instanceId];
   const isStreaming = instanceScreenshotStreaming[instanceId] ?? false;
   const isConnected = connectionStatus === 'Connected';
-  const isResourceLoaded = instanceResourceLoaded[instanceId] || false;
 
-  // 获取当前实例
-  const instance = instances.find((i) => i.id === instanceId);
   const isRunning = instance?.isRunning || false;
   const tasks = instance?.selectedTasks || [];
-  const enabledTasks = tasks.filter((t) => t.enabled);
-  const canRun = isConnected && isResourceLoaded && enabledTasks.length > 0;
+  const canRun = tasks.some(isTaskSelectedForRun);
 
-  // 获取当前控制器和资源名（用于 pipeline override 生成）
-  const currentControllerName =
-    selectedController[instanceId] || projectInterface?.controller[0]?.name;
-  const currentResourceName = selectedResource[instanceId] || projectInterface?.resource[0]?.name;
-
-  // 获取连接状态信息
+    // 获取连接状态信息
   const getStatusInfo = useCallback(() => {
     const controllers = projectInterface?.controller || [];
     const resources = projectInterface?.resource || [];
-    const currentControllerName = selectedController[instanceId] || controllers[0]?.name;
-    const currentResourceName = selectedResource[instanceId] || resources[0]?.name;
+    const currentControllerName =
+      selectedController[instanceId] || instance?.controllerName || controllers[0]?.name;
+    const currentResourceName =
+      selectedResource[instanceId] || instance?.resourceName || resources[0]?.name;
     const currentController = controllers.find((c) => c.name === currentControllerName);
     const currentResource = resources.find((r) => r.name === currentResourceName);
 
@@ -207,7 +196,7 @@ function InstanceCard({ instanceId, instanceName, isActive, onSelect }: Instance
 
   const runningTaskName = getRunningTaskName();
 
-  // 启动/停止任务
+  // 启动/停止任务（复用 Toolbar 的 taskStartService 与 stopInstanceTasks）
   const handleStartStop = useCallback(
     async (e: React.MouseEvent) => {
       e.stopPropagation();
@@ -215,7 +204,6 @@ function InstanceCard({ instanceId, instanceName, isActive, onSelect }: Instance
       if (!instance || (!canRun && !isRunning)) return;
 
       if (isRunning) {
-        // 停止任务
         try {
           log.info(`[${instanceName}] 停止任务...`);
           setIsStopping(true);
@@ -229,225 +217,18 @@ function InstanceCard({ instanceId, instanceName, isActive, onSelect }: Instance
           setIsStopping(false);
         }
       } else {
-        // 启动任务
         if (!canRun) return;
-
         setIsStarting(true);
-
         try {
-          const compatibleEnabledTasks = enabledTasks.filter((task) => {
-            const specialTask = getMxuSpecialTask(task.taskName);
-            const pretask = isPretaskName(task.taskName)
-              ? getPretaskItem(projectInterface, task.taskName)
-              : undefined;
-            const taskDef =
-              specialTask?.taskDef ||
-              (pretask ? buildPretaskDef(pretask) : undefined) ||
-              projectInterface?.task.find((item) => item.name === task.taskName);
-            return isTaskCompatible(taskDef, currentControllerName, currentResourceName);
-          });
-          const checkboxViolations = validateInstanceCheckboxCounts(
-            compatibleEnabledTasks,
-            projectInterface,
-            currentControllerName,
-            currentResourceName,
-            useAppStore.getState().globalOptionValues,
-          );
-          if (checkboxViolations.length > 0) {
-            for (const violation of checkboxViolations) {
-              const message = formatCheckboxCountViolation(
-                violation,
-                compatibleEnabledTasks,
-                projectInterface,
-                translations,
-                t,
-              );
-              log.warn(`[${instanceName}] ${message}`);
-              addLog(instanceId, { type: 'error', message });
-            }
-            setIsStarting(false);
-            return;
-          }
-
-          // v2.7.0: 连接 Controller 前执行 pretask（如游戏设置）
-          // pretask 以伪任务形式存在于任务列表中，此处从已启用任务中筛出。
-          const enabledPretasks = enabledTasks
-            .filter((task) => isPretaskName(task.taskName))
-            .map((task) => ({ task, item: getPretaskItem(projectInterface, task.taskName) }))
-            .filter((p): p is { task: (typeof enabledTasks)[0]; item: PretaskItem } => !!p.item)
-            .filter(({ item }) =>
-              isTaskCompatible(buildPretaskDef(item), currentControllerName, currentResourceName),
-            );
-          for (const { task, item } of enabledPretasks) {
-            const args = buildPretaskArgs(
-              item,
-              task.optionValues ?? {},
-              projectInterface,
-              currentControllerName,
-              currentResourceName,
-            );
-            log.info(`[${instanceName}] 执行预任务:`, item.exec, args);
-            try {
-              const exitCode = await maaService.runPretask(instanceId, item.exec, args, basePath);
-              if (exitCode !== 0) {
-                log.warn(`[${instanceName}] 预任务退出码非零: ${exitCode}`);
-              }
-            } catch (err) {
-              log.error(`[${instanceName}] 预任务执行失败:`, err);
-            }
-          }
-
-          const runnableTasks = enabledTasks
-            .map((selectedTask) => {
-              // pretask 不进入 Tasker 队列，已在连接 Controller 前单独执行
-              if (isPretaskName(selectedTask.taskName)) return null;
-              const specialTask = getMxuSpecialTask(selectedTask.taskName);
-              const taskDef =
-                specialTask?.taskDef ||
-                projectInterface?.task.find((t) => t.name === selectedTask.taskName);
-              if (!taskDef) return null;
-              return {
-                taskName: selectedTask.taskName,
-                selectedTask,
-                taskDef,
-                specialTask,
-              };
-            })
-            .filter((item): item is NonNullable<typeof item> => item !== null);
-
-          log.info(`[${instanceName}] 开始执行任务, 数量: ${runnableTasks.length}`);
-
-          if (runnableTasks.length === 0) {
-            log.warn(`[${instanceName}] 没有可执行的任务`);
-            setIsStarting(false);
-            return;
-          }
-
-          const taskConfigs: TaskConfig[] = runnableTasks.map(
-            ({ selectedTask, taskDef, specialTask }) => {
-              const taskDisplayName =
-                selectedTask.customName ||
-                (specialTask && taskDef.label
-                  ? t(taskDef.label)
-                  : resolveI18nText(taskDef.label, translations)) ||
-                selectedTask.taskName;
-              registerEntryTaskName(taskDef.entry, taskDisplayName);
-
-              return {
-                entry: taskDef.entry,
-                pipeline_override: generateTaskPipelineOverride(
-                  selectedTask,
-                  projectInterface,
-                  currentControllerName,
-                  currentResourceName,
-                  useAppStore.getState().globalOptionValues,
-                ),
-                selected_task_id: selectedTask.id,
-                task_name: taskDef.name,
-                options: buildTaskOptionSummary(
-                  selectedTask,
-                  taskDef.option,
-                  specialTask?.optionDefs ?? projectInterface?.option,
-                ),
-              };
-            },
-          );
-
-          // 准备 Agent 配置（支持单个或多个 Agent）
-          const agentConfigs = normalizeAgentConfigs(projectInterface?.agent);
-
-          // PI v2.5.0: 构建 Agent 子进程环境变量
-          const piEnvs = agentConfigs?.length
-            ? buildPiEnvVars({
-                projectInterface,
-                controllerName: currentControllerName,
-                resourceName: currentResourceName,
-                translations,
-                language,
-                maaVersion,
-              })
-            : undefined;
-
-          updateInstance(instanceId, { isRunning: true });
-          setInstanceTaskStatus(instanceId, 'Running');
-          setShowAddTaskPanel(false);
-
-          // 任务可能在 startTasks 返回前就瞬时结束，先启动全局回调缓存再提交。
-          await startGlobalCallbackListener();
-
-          const startedTaskIds = await maaService.startTasks(
-            instanceId,
-            taskConfigs,
-            agentConfigs,
-            basePath,
-            tcpCompatMode,
-            piEnvs,
-            {
-              name: currentControllerName,
-              type: projectInterface?.controller.find((c) => c.name === currentControllerName)
-                ?.type,
-            },
-            collectPasswordPlaintextsFromRunnableTasks(
-              runnableTasks,
-              useAppStore.getState().globalOptionValues,
-              projectInterface?.option ?? {},
-            ),
-          );
-
-          startedTaskIds.forEach((maaTaskId, index) => {
-            const runnable = runnableTasks[index];
-            if (!runnable) return;
-            const { selectedTask, taskDef, specialTask } = runnable;
-            const taskDisplayName =
-              selectedTask.customName ||
-              (specialTask && taskDef.label
-                ? t(taskDef.label)
-                : resolveI18nText(taskDef.label, translations)) ||
-              selectedTask.taskName;
-            registerTaskIdName(maaTaskId, taskDisplayName);
-          });
-
-          log.info(`[${instanceName}] 任务已提交, task_ids:`, startedTaskIds);
-
-          setIsStarting(false);
+          await taskStartService.start(instance);
         } catch (err) {
           log.error(`[${instanceName}] 任务启动异常:`, err);
-          const failedAgentConfigs = normalizeAgentConfigs(projectInterface?.agent);
-          if (failedAgentConfigs && failedAgentConfigs.length > 0) {
-            try {
-              await maaService.stopAgent(instanceId);
-            } catch {
-              // 忽略
-            }
-          }
-          updateInstance(instanceId, { isRunning: false });
-          setInstanceTaskStatus(instanceId, 'Failed');
-          setInstanceCurrentTaskId(instanceId, null);
-          clearScheduleExecution(instanceId);
+        } finally {
           setIsStarting(false);
         }
       }
     },
-    [
-      instance,
-      instanceId,
-      instanceName,
-      isRunning,
-      canRun,
-      enabledTasks,
-      projectInterface,
-      basePath,
-      updateInstance,
-      setInstanceTaskStatus,
-      setInstanceCurrentTaskId,
-      clearScheduleExecution,
-      registerTaskIdName,
-      registerEntryTaskName,
-      setShowAddTaskPanel,
-      addLog,
-      translations,
-      tcpCompatMode,
-    ],
+    [instance, instanceId, instanceName, isRunning, canRun],
   );
 
   // 获取最新缓存截图（后端截图循环负责更新缓存，前端无需主动触发 postScreencap）
@@ -515,7 +296,7 @@ function InstanceCard({ instanceId, instanceName, isActive, onSelect }: Instance
   useEffect(() => {
     if (!instanceId || !isStreaming) return;
 
-    const intervalMs = getFrameInterval(screenshotFrameRate);
+    const intervalMs = getFrameInterval(screenshotFrameRate, isMuMu);
     maaService
       .screenshotSubscribe(instanceId, `dashboard-${instanceId}`, intervalMs)
       .catch(() => {});
@@ -523,7 +304,7 @@ function InstanceCard({ instanceId, instanceName, isActive, onSelect }: Instance
     return () => {
       maaService.screenshotUnsubscribe(instanceId, `dashboard-${instanceId}`).catch(() => {});
     };
-  }, [instanceId, isStreaming, screenshotFrameRate]);
+  }, [instanceId, isStreaming, screenshotFrameRate, isMuMu]);
 
   // 响应 store 中 isStreaming 状态变化
   useEffect(() => {
@@ -642,93 +423,183 @@ function InstanceCard({ instanceId, instanceName, isActive, onSelect }: Instance
     }
   }, [captureFrame]);
 
-  // 右键菜单（复用首页截图面板的菜单结构）
+  const handleSaveEdit = useCallback(() => {
+    if (editName.trim()) {
+      renameInstance(instanceId, editName.trim());
+    }
+    setIsEditing(false);
+    setEditName('');
+  }, [editName, instanceId, renameInstance]);
+
+  const handleCancelEdit = useCallback(() => {
+    setIsEditing(false);
+    setEditName('');
+  }, []);
+
+  const requestCloseInstance = useCallback(() => {
+    if (instances.length <= 1) return;
+    if (confirmBeforeDelete) {
+      setShowCloseConfirm(true);
+    } else {
+      startTabCloseAnimation(instanceId);
+    }
+  }, [instances.length, confirmBeforeDelete, instanceId, startTabCloseAnimation]);
+
+  const buildMenuItems = useCallback((): MenuItem[] => {
+    return [
+      {
+        id: 'run-stop',
+        label: isRunning ? t('taskList.stopTasks') : t('taskList.startTasks'),
+        icon: isRunning ? StopCircle : Play,
+        disabled: isStarting || isStopping || (!canRun && !isRunning),
+        onClick: () => {
+          if (!instance) return;
+          if (isRunning) {
+            void stopInstanceTasks(instanceId);
+          } else if (canRun) {
+            void taskStartService.start(instance);
+          }
+        },
+      },
+      {
+        id: 'duplicate-instance',
+        label: t('contextMenu.duplicateTab'),
+        icon: Copy,
+        onClick: () => duplicateInstance(instanceId),
+      },
+      {
+        id: 'rename-instance',
+        label: t('contextMenu.renameTab'),
+        icon: Edit3,
+        onClick: () => {
+          setEditName(instanceName);
+          setIsEditing(true);
+        },
+      },
+      {
+        id: 'close-instance',
+        label: t('contextMenu.closeTab'),
+        icon: Trash2,
+        disabled: instances.length <= 1,
+        danger: true,
+        onClick: requestCloseInstance,
+      },
+      { id: 'divider-instance', label: '', divider: true },
+      {
+        id: 'stream',
+        label: isStreaming ? t('contextMenu.stopStream') : t('contextMenu.startStream'),
+        icon: isStreaming ? Pause : Play,
+        disabled: !isConnected,
+        onClick: () => {
+          if (!instanceId || !isConnected) return;
+          if (isStreaming) {
+            streamingRef.current = false;
+            setInstanceScreenshotStreaming(instanceId, false);
+          } else {
+            streamingRef.current = true;
+            setInstanceScreenshotStreaming(instanceId, true);
+            streamLoop();
+          }
+        },
+      },
+      {
+        id: 'refresh',
+        label: t('contextMenu.forceRefresh'),
+        icon: RefreshCw,
+        disabled: !isConnected,
+        onClick: forceRefresh,
+      },
+      { id: 'divider-1', label: '', divider: true },
+      {
+        id: 'fullscreen',
+        label: t('contextMenu.fullscreen'),
+        icon: Maximize2,
+        disabled: !screenshotUrl,
+        onClick: () => setIsFullscreen(true),
+      },
+      { id: 'divider-2', label: '', divider: true },
+      {
+        id: 'save',
+        label: t('contextMenu.saveScreenshot'),
+        icon: Download,
+        disabled: !screenshotUrl,
+        onClick: saveScreenshot,
+      },
+      {
+        id: 'copy',
+        label: t('contextMenu.copyScreenshot'),
+        icon: Copy,
+        disabled: !screenshotUrl,
+        onClick: copyScreenshot,
+      },
+      { id: 'divider-3', label: '', divider: true },
+      {
+        id: 'disconnect',
+        label: t('contextMenu.disconnect'),
+        icon: Unplug,
+        disabled: !isConnected,
+        danger: true,
+        onClick: disconnect,
+      },
+    ];
+  }, [
+    t,
+    instance,
+    instanceId,
+    instanceName,
+    instances.length,
+    isRunning,
+    isStarting,
+    isStopping,
+    canRun,
+    isConnected,
+    isStreaming,
+    screenshotUrl,
+    duplicateInstance,
+    requestCloseInstance,
+    setInstanceScreenshotStreaming,
+    streamLoop,
+    forceRefresh,
+    saveScreenshot,
+    copyScreenshot,
+    disconnect,
+  ]);
+
+  // 右键菜单（复用首页截图面板的菜单结构 + 实例管理项）
   const handleContextMenu = useCallback(
     (e: React.MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target?.tagName === 'INPUT' ||
+        target?.tagName === 'TEXTAREA' ||
+        target?.isContentEditable ||
+        target?.closest('input, textarea, [contenteditable="true"]')
+      ) {
+        e.stopPropagation();
+        return;
+      }
       e.preventDefault();
       e.stopPropagation();
-
-      const menuItems: MenuItem[] = [
-        {
-          id: 'stream',
-          label: isStreaming ? t('contextMenu.stopStream') : t('contextMenu.startStream'),
-          icon: isStreaming ? Pause : Play,
-          disabled: !isConnected,
-          onClick: () => {
-            if (!instanceId || !isConnected) return;
-            if (isStreaming) {
-              streamingRef.current = false;
-              setInstanceScreenshotStreaming(instanceId, false);
-            } else {
-              streamingRef.current = true;
-              setInstanceScreenshotStreaming(instanceId, true);
-              streamLoop();
-            }
-          },
-        },
-        {
-          id: 'refresh',
-          label: t('contextMenu.forceRefresh'),
-          icon: RefreshCw,
-          disabled: !isConnected,
-          onClick: forceRefresh,
-        },
-        { id: 'divider-1', label: '', divider: true },
-        {
-          id: 'fullscreen',
-          label: t('contextMenu.fullscreen'),
-          icon: Maximize2,
-          disabled: !screenshotUrl,
-          onClick: () => setIsFullscreen(true),
-        },
-        { id: 'divider-2', label: '', divider: true },
-        {
-          id: 'save',
-          label: t('contextMenu.saveScreenshot'),
-          icon: Download,
-          disabled: !screenshotUrl,
-          onClick: saveScreenshot,
-        },
-        {
-          id: 'copy',
-          label: t('contextMenu.copyScreenshot'),
-          icon: Copy,
-          disabled: !screenshotUrl,
-          onClick: copyScreenshot,
-        },
-        { id: 'divider-3', label: '', divider: true },
-        {
-          id: 'disconnect',
-          label: t('contextMenu.disconnect'),
-          icon: Unplug,
-          disabled: !isConnected,
-          danger: true,
-          onClick: disconnect,
-        },
-      ];
-
-      showMenu(e, menuItems);
+      showMenu(e, buildMenuItems());
     },
-    [
-      t,
-      instanceId,
-      isConnected,
-      isStreaming,
-      screenshotUrl,
-      setInstanceScreenshotStreaming,
-      streamLoop,
-      forceRefresh,
-      saveScreenshot,
-      copyScreenshot,
-      disconnect,
-      showMenu,
-    ],
+    [buildMenuItems, showMenu],
+  );
+
+  const handleOpenMenuAtButton = useCallback(
+    (e: React.MouseEvent<HTMLButtonElement>) => {
+      e.stopPropagation();
+      const rect = e.currentTarget.getBoundingClientRect();
+      showMenuAt({ x: rect.left, y: rect.bottom + 4 }, buildMenuItems());
+    },
+    [buildMenuItems, showMenuAt],
   );
 
   return (
     <div
-      onClick={onSelect}
-      onContextMenu={handleContextMenu}
+      onClick={() => {
+        if (!isEditing) onSelect();
+      }}
+      onContextMenu={isMobile ? undefined : handleContextMenu}
       className={clsx(
         'group relative bg-bg-secondary rounded-xl border-2 overflow-hidden cursor-pointer transition-all duration-200 hover:scale-[1.02] hover:shadow-lg',
         isActive ? 'border-accent shadow-md' : 'border-border hover:border-accent/50',
@@ -756,21 +627,22 @@ function InstanceCard({ instanceId, instanceName, isActive, onSelect }: Instance
           </div>
         )}
 
-        {/* 任务控制按钮 */}
-        {isConnected && (
+        {/* 任务控制按钮（支持未连接时通过 taskStartService 自动启动 MuMu / 自动连接并执行） */}
+        {(canRun || isRunning || isConnected) && (
           <button
+            type="button"
             onClick={handleStartStop}
             disabled={isStarting || isStopping || (!canRun && !isRunning)}
             className={clsx(
-              'absolute bottom-2 right-2 p-1.5 rounded-md transition-all',
+              'absolute bottom-2 right-2 p-2 sm:p-1.5 rounded-md transition-all shadow-sm',
               isStarting || isStopping
                 ? 'bg-yellow-500/80 text-white'
                 : isRunning
                   ? 'bg-red-500/80 hover:bg-red-600/80 text-white'
                   : canRun
-                    ? 'bg-success/80 hover:bg-success text-white'
+                    ? 'bg-success/85 hover:bg-success text-white'
                     : 'bg-black/30 text-white/50 cursor-not-allowed',
-              'opacity-0 group-hover:opacity-100',
+              'opacity-100 sm:opacity-0 sm:group-hover:opacity-100',
             )}
             title={
               isStarting
@@ -785,11 +657,11 @@ function InstanceCard({ instanceId, instanceName, isActive, onSelect }: Instance
             }
           >
             {isStarting || isStopping ? (
-              <Loader2 className="w-3 h-3 animate-spin" />
+              <Loader2 className="w-3.5 h-3.5 sm:w-3 sm:h-3 animate-spin" />
             ) : isRunning ? (
-              <StopCircle className="w-3 h-3" />
+              <StopCircle className="w-3.5 h-3.5 sm:w-3 sm:h-3" />
             ) : (
-              <Play className="w-3 h-3" />
+              <Play className="w-3.5 h-3.5 sm:w-3 sm:h-3" />
             )}
           </button>
         )}
@@ -800,79 +672,147 @@ function InstanceCard({ instanceId, instanceName, isActive, onSelect }: Instance
         <div className="flex items-center justify-between gap-2">
           {/* 左侧：实例名称 + 控制器/设备信息 */}
           <div className="flex items-center gap-2 min-w-0 flex-1">
-            <span
-              className={clsx(
-                'font-medium truncate flex-shrink-0',
-                isActive ? 'text-accent' : 'text-text-primary',
-              )}
-            >
-              {instanceName}
-            </span>
-            {/* 控制器/设备信息标签 */}
-            {(statusInfo.controllerLabel || statusInfo.deviceName) && (
-              <div className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-bg-tertiary text-text-secondary text-xs truncate min-w-0">
-                {isConnected ? (
-                  <Wifi className="w-3 h-3 text-success flex-shrink-0" />
-                ) : (
-                  <WifiOff className="w-3 h-3 text-text-muted flex-shrink-0" />
-                )}
-                <span className="truncate">
-                  {statusInfo.deviceName || statusInfo.controllerLabel}
+            {isEditing ? (
+              <div
+                className="flex items-center gap-1 flex-1 min-w-0"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <input
+                  type="text"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleSaveEdit();
+                    else if (e.key === 'Escape') handleCancelEdit();
+                  }}
+                  onBlur={handleSaveEdit}
+                  autoFocus
+                  className="flex-1 min-w-0 px-2 py-0.5 text-sm rounded border border-accent bg-bg-primary text-text-primary focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    handleSaveEdit();
+                  }}
+                  className="p-1 rounded hover:bg-success/10 text-success"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    handleCancelEdit();
+                  }}
+                  className="p-1 rounded hover:bg-error/10 text-error"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ) : (
+              <>
+                <span
+                  className={clsx(
+                    'font-medium truncate flex-shrink-0',
+                    isActive ? 'text-accent' : 'text-text-primary',
+                  )}
+                >
+                  {instanceName}
                 </span>
-              </div>
-            )}
-            {/* 资源信息标签 - 单独显示以增加间距 */}
-            {statusInfo.resourceLabel && (
-              <div className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-bg-tertiary text-text-secondary text-xs truncate min-w-0">
-                <CheckCircle className="w-3 h-3 text-success flex-shrink-0" />
-                <span className="truncate">{statusInfo.resourceLabel}</span>
-              </div>
+                {/* 控制器/设备信息标签 */}
+                {(statusInfo.controllerLabel || statusInfo.deviceName) && (
+                  <div className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-bg-tertiary text-text-secondary text-xs truncate min-w-0">
+                    {isConnected ? (
+                      <Wifi className="w-3 h-3 text-success flex-shrink-0" />
+                    ) : (
+                      <WifiOff className="w-3 h-3 text-text-muted flex-shrink-0" />
+                    )}
+                    <span className="truncate">
+                      {statusInfo.deviceName || statusInfo.controllerLabel}
+                    </span>
+                  </div>
+                )}
+                {/* 资源信息标签 - 单独显示以增加间距 */}
+                {statusInfo.resourceLabel && (
+                  <div className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-bg-tertiary text-text-secondary text-xs truncate min-w-0">
+                    <CheckCircle className="w-3 h-3 text-success flex-shrink-0" />
+                    <span className="truncate">{statusInfo.resourceLabel}</span>
+                  </div>
+                )}
+              </>
             )}
           </div>
 
-          {/* 右侧：状态按钮（类似"开始任务"按钮样式） */}
-          <div
-            className={clsx(
-              'flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors flex-shrink-0',
-              isRunning || taskStatus === 'Running'
-                ? 'bg-success text-white'
-                : taskStatus === 'Failed'
-                  ? 'bg-error text-white'
-                  : taskStatus === 'Succeeded'
-                    ? 'bg-accent text-white'
-                    : isConnected
-                      ? 'bg-bg-tertiary text-text-secondary'
-                      : 'bg-bg-active text-text-tertiary',
-            )}
-          >
-            {isRunning || taskStatus === 'Running' ? (
-              <>
-                <Loader2 className="w-3 h-3 animate-spin" />
-                <span className="truncate max-w-[80px]">
-                  {runningTaskName || t('dashboard.running')}
-                </span>
-              </>
-            ) : taskStatus === 'Failed' ? (
-              <>
-                <StopCircle className="w-3 h-3" />
-                <span>{t('dashboard.failed')}</span>
-              </>
-            ) : taskStatus === 'Succeeded' ? (
-              <>
-                <CheckCircle className="w-3 h-3" />
-                <span>{t('dashboard.succeeded')}</span>
-              </>
-            ) : isConnected ? (
-              <>
-                <Play className="w-3 h-3" />
-                <span>{t('controller.connected')}</span>
-              </>
-            ) : (
-              <>
-                <WifiOff className="w-3 h-3" />
-                <span>{t('controller.disconnected')}</span>
-              </>
-            )}
+          {/* 右侧：状态按钮（可点击直接启动/停止任务） + 移动端更多菜单按钮 */}
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <button
+              type="button"
+              onClick={(e) => {
+                if (canRun || isRunning) {
+                  void handleStartStop(e);
+                }
+              }}
+              className={clsx(
+                'flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors flex-shrink-0',
+                isRunning || taskStatus === 'Running'
+                  ? 'bg-success text-white'
+                  : taskStatus === 'Failed'
+                    ? 'bg-error text-white'
+                    : taskStatus === 'Succeeded'
+                      ? 'bg-accent text-white'
+                      : isConnected
+                        ? 'bg-bg-tertiary text-text-secondary'
+                        : 'bg-bg-active text-text-tertiary',
+              )}
+              title={
+                isRunning
+                  ? t('taskList.stopTasks')
+                  : canRun
+                    ? t('taskList.startTasks')
+                    : undefined
+              }
+            >
+              {isRunning || taskStatus === 'Running' ? (
+                <>
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  <span className="truncate max-w-[80px]">
+                    {runningTaskName || t('dashboard.running')}
+                  </span>
+                </>
+              ) : taskStatus === 'Failed' ? (
+                <>
+                  <StopCircle className="w-3 h-3" />
+                  <span>{t('dashboard.failed')}</span>
+                </>
+              ) : taskStatus === 'Succeeded' ? (
+                <>
+                  <CheckCircle className="w-3 h-3" />
+                  <span>{t('dashboard.succeeded')}</span>
+                </>
+              ) : isConnected ? (
+                <>
+                  <Play className="w-3 h-3" />
+                  <span>{t('controller.connected')}</span>
+                </>
+              ) : (
+                <>
+                  <WifiOff className="w-3 h-3" />
+                  <span>{t('controller.disconnected')}</span>
+                </>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleOpenMenuAtButton}
+              className="sm:hidden p-1.5 rounded-md text-text-muted hover:bg-bg-hover hover:text-text-primary transition-colors"
+              title={t('common.edit')}
+            >
+              <MoreVertical className="w-4 h-4" />
+            </button>
           </div>
         </div>
       </div>
@@ -887,6 +827,25 @@ function InstanceCard({ instanceId, instanceName, isActive, onSelect }: Instance
       {/* 右键菜单 */}
       {menuState.isOpen && (
         <ContextMenu items={menuState.items} position={menuState.position} onClose={hideMenu} />
+      )}
+
+      {/* 确认删除弹窗（包裹阻止冒泡，防止点击确认/取消误触卡片选中） */}
+      {showCloseConfirm && (
+        <div onClick={(e) => e.stopPropagation()}>
+          <ConfirmDialog
+            open={showCloseConfirm}
+            title={t('titleBar.closeTabConfirmTitle')}
+            message={t('titleBar.closeTabConfirmMessage', { name: instanceName })}
+            confirmText={t('common.confirm')}
+            cancelText={t('common.cancel')}
+            destructive
+            onConfirm={() => {
+              setShowCloseConfirm(false);
+              startTabCloseAnimation(instanceId);
+            }}
+            onCancel={() => setShowCloseConfirm(false)}
+          />
+        </div>
       )}
 
       {/* 全屏模态框 */}
@@ -944,7 +903,14 @@ interface DashboardViewProps {
 
 export function DashboardView({ onClose }: DashboardViewProps) {
   const { t } = useTranslation();
-  const { instances, activeInstanceId, setActiveInstance, toggleDashboardView } = useAppStore();
+  const isMobile = useIsMobile();
+  const {
+    instances,
+    activeInstanceId,
+    setActiveInstance,
+    createInstance,
+    toggleDashboardView,
+  } = useAppStore();
 
   // 实例网格对齐方式：left / center / right
   const [align, setAlign] = useState<'left' | 'center' | 'right'>('center');
@@ -968,7 +934,7 @@ export function DashboardView({ onClose }: DashboardViewProps) {
   return (
     <div className="h-full flex flex-col bg-bg-primary overflow-hidden">
       {/* 实例网格 */}
-      <div className="flex-1 overflow-auto p-6">
+      <div className="flex-1 overflow-auto p-3 sm:p-6">
         {instances.length === 0 ? (
           <div className="h-full flex items-center justify-center text-text-muted">
             <p>{t('dashboard.noInstances')}</p>
@@ -984,14 +950,14 @@ export function DashboardView({ onClose }: DashboardViewProps) {
           >
             <div
               className={clsx(
-                'grid gap-4',
+                'grid gap-4 w-full',
                 instances.length === 1
                   ? 'grid-cols-1 max-w-2xl'
                   : instances.length === 2
-                    ? 'grid-cols-2 max-w-4xl'
+                    ? 'grid-cols-1 sm:grid-cols-2 max-w-4xl'
                     : instances.length <= 4
-                      ? 'grid-cols-2 lg:grid-cols-2 max-w-5xl'
-                      : 'grid-cols-2 lg:grid-cols-3 xl:grid-cols-4',
+                      ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 max-w-5xl'
+                      : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4',
               )}
               style={
                 {
@@ -1016,17 +982,28 @@ export function DashboardView({ onClose }: DashboardViewProps) {
       </div>
 
       {/* 底部工具栏 */}
-      <div className="flex items-center justify-between px-6 py-4 border-t border-border bg-bg-secondary">
-        <div className="flex items-center gap-3">
+      <div className="flex items-center justify-between px-3 py-2.5 sm:px-6 sm:py-4 flex-wrap gap-2 border-t border-border bg-bg-secondary">
+        <div className="flex items-center gap-2 sm:gap-3">
           <LayoutGrid className="w-5 h-5 text-accent" />
-          <h1 className="text-lg font-semibold text-text-primary">{t('dashboard.title')}</h1>
+          <h1 className="text-base sm:text-lg font-semibold text-text-primary">
+            {t('dashboard.title')}
+          </h1>
           <span className="px-2 py-0.5 text-xs bg-accent/10 text-accent rounded-full">
             {instances.length} {t('dashboard.instances')}
           </span>
+          <button
+            type="button"
+            onClick={() => createInstance(t('instance.defaultName'))}
+            className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-lg bg-accent/15 text-accent hover:bg-accent/25 active:bg-accent/30 transition-colors"
+            title={t('titleBar.newTab')}
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>{t('titleBar.newTab')}</span>
+          </button>
         </div>
 
-        {/* 中间：排列 + 缩放（放在底部中间区域） */}
-        <div className="flex items-center justify-center gap-4">
+        {/* 中间：排列 + 缩放（放在底部中间区域，窄屏隐藏避免拥挤） */}
+        <div className="hidden sm:flex items-center justify-center gap-4">
           {/* 对齐方式切换 */}
           <div className="flex items-center gap-1 bg-bg-tertiary rounded-md px-1.5 py-1">
             <button
@@ -1092,15 +1069,17 @@ export function DashboardView({ onClose }: DashboardViewProps) {
           </div>
         </div>
 
-        {/* 右侧：帧率 + 退出按钮 */}
+        {/* 右侧：帧率 + 退出按钮（移动端已有底部常驻导航栏，隐藏冗余退出按钮） */}
         <div className="flex items-center gap-4">
           <FrameRateSelector compact />
-          <button
-            onClick={handleClose}
-            className="px-3 py-1.5 text-sm bg-bg-hover hover:bg-bg-active text-text-secondary rounded-lg transition-colors"
-          >
-            {t('dashboard.exit')}
-          </button>
+          {!isMobile && (
+            <button
+              onClick={handleClose}
+              className="px-3 py-1.5 text-sm bg-bg-hover hover:bg-bg-active text-text-secondary rounded-lg transition-colors"
+            >
+              {t('dashboard.exit')}
+            </button>
+          )}
         </div>
       </div>
     </div>

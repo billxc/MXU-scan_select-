@@ -477,7 +477,7 @@ export function SettingsPage({ onClose }: SettingsPageProps) {
 
         {/* 右侧设置内容 */}
         <div className="flex-1 overflow-y-auto" ref={scrollContainerRef}>
-          <div className="max-w-2xl mx-auto p-6 space-y-8">
+          <div className="max-w-2xl mx-auto p-3.5 sm:p-6 space-y-6 sm:space-y-8">
             {/* 外观设置 */}
             <AppearanceSection
               onOpenCreateAccentModal={openCreateAccentModal}

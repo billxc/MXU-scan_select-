@@ -12,6 +12,8 @@ import {
   AlertCircle,
   Play,
   CircleDot,
+  MoreVertical,
+  SlidersHorizontal,
 } from 'lucide-react';
 import { useAppStore, type TaskRunStatus } from '@/stores/appStore';
 import { maaService } from '@/services/maaService';
@@ -34,6 +36,8 @@ import { stripInlineRichText } from '@/utils/richText';
 import clsx from 'clsx';
 import { loggers } from '@/utils/logger';
 import { isPasswordInput } from '@/utils/passwordOptionValues';
+import { useIsMobile } from '@/hooks/useIsMobile';
+import { MobileSheet } from './ui/MobileSheet';
 
 /** 选项预览标签组件 */
 function OptionPreviewTag({
@@ -318,6 +322,7 @@ function OptionListRenderer({
 
 export function TaskItem({ instanceId, task }: TaskItemProps) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const [isEditing, setIsEditing] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [editName, setEditName] = useState('');
@@ -492,9 +497,17 @@ export function TaskItem({ instanceId, task }: TaskItemProps) {
   // 获取翻译表
   const translations = interfaceTranslations[langKey];
 
-  // 使用新的 Hook 解析任务描述（支持文件/URL/直接文本）
+  // 使用新的 Hook 解析任务描述（支持文件/URL/直接文本；MXU 特殊任务使用 t() 翻译键）
+  const rawDescription = useMemo(() => {
+    if (!taskDef?.description) return undefined;
+    if (isMxuTask && typeof taskDef.description === 'string') {
+      return t(taskDef.description);
+    }
+    return resolveI18nText(taskDef.description, langKey);
+  }, [taskDef?.description, isMxuTask, t, resolveI18nText, langKey]);
+
   const resolvedDescription = useResolvedContent(
-    taskDef?.description ? resolveI18nText(taskDef.description, langKey) : undefined,
+    rawDescription,
     basePath,
     translations,
   );
@@ -727,6 +740,16 @@ export function TaskItem({ instanceId, task }: TaskItemProps) {
   // 右键菜单处理
   const handleContextMenu = useCallback(
     (e: React.MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target?.tagName === 'INPUT' ||
+        target?.tagName === 'TEXTAREA' ||
+        target?.isContentEditable ||
+        target?.closest('input, textarea, [contenteditable="true"]')
+      ) {
+        e.stopPropagation();
+        return;
+      }
       e.preventDefault();
       e.stopPropagation();
 
@@ -752,6 +775,14 @@ export function TaskItem({ instanceId, task }: TaskItemProps) {
           onClick: () => void handleRunSingle(),
         },
         { id: 'divider-run', label: '', divider: true },
+        {
+          id: 'run-once',
+          label: t('contextMenu.runOnceTask'),
+          icon: CircleDot,
+          checked: Boolean(task.runOnce),
+          disabled: isInstanceRunning || isIncompatible,
+          onClick: () => setTaskRunOnce(instanceId, task.id, !task.runOnce),
+        },
         ...buildListItemMenuItems({
           labels: {
             duplicate: t('contextMenu.duplicateTask'),
@@ -813,6 +844,7 @@ export function TaskItem({ instanceId, task }: TaskItemProps) {
       showMenu,
       isInstanceRunning,
       isIncompatible,
+      setTaskRunOnce,
       handleRunFromHere,
       handleRunSingle,
     ],
@@ -877,7 +909,7 @@ export function TaskItem({ instanceId, task }: TaskItemProps) {
     <div
       ref={setRefs}
       style={style}
-      onContextMenu={handleContextMenu}
+      onContextMenu={isMobile ? undefined : handleContextMenu}
       className={clsx(
         'group bg-bg-secondary rounded-lg border border-border transition-shadow relative overflow-hidden',
         isDragging && 'shadow-lg opacity-50',
@@ -903,7 +935,7 @@ export function TaskItem({ instanceId, task }: TaskItemProps) {
           {...attributes}
           {...(canReorder ? listeners : {})}
           className={clsx(
-            'p-1 rounded',
+            'p-1 rounded touch-none',
             canReorder
               ? 'cursor-grab active:cursor-grabbing hover:bg-bg-hover'
               : 'cursor-not-allowed opacity-30',
@@ -997,9 +1029,9 @@ export function TaskItem({ instanceId, task }: TaskItemProps) {
                   className="flex-1 min-w-0 flex items-center self-stretch min-h-[28px] cursor-pointer"
                   title={task.expanded ? t('taskItem.collapse') : t('taskItem.expand')}
                 >
-                  {/* 选项预览标签 - 未展开时显示：不兼容时显示警告，否则显示选项预览 */}
-                  {!task.expanded && (
-                    <div className="flex-1 flex items-center gap-1.5 mx-2 overflow-hidden">
+                  {/* 选项预览标签 - 移动端始终显示（因为配置在底部抽屉中），桌面端未展开时显示 */}
+                  {(isMobile || !task.expanded) && (
+                    <div className="flex-1 flex flex-wrap sm:flex-nowrap items-center gap-1 sm:gap-1.5 mx-2 overflow-hidden">
                       {isIncompatible ? (
                         <Tooltip content={supportedControllerHint || undefined}>
                           <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-xs text-warning">
@@ -1010,7 +1042,7 @@ export function TaskItem({ instanceId, task }: TaskItemProps) {
                       ) : (
                         showOptionPreview &&
                         optionPreviews.length > 0 &&
-                        optionPreviews.map((preview) => (
+                        (isMobile ? optionPreviews.slice(0, 3) : optionPreviews).map((preview) => (
                           <OptionPreviewTag
                             key={preview.key}
                             label={preview.label}
@@ -1021,14 +1053,27 @@ export function TaskItem({ instanceId, task }: TaskItemProps) {
                       )}
                     </div>
                   )}
-                  {/* 展开/折叠箭头 */}
-                  <div className="flex shrink-0 items-center justify-end pl-2 ml-auto">
-                    <ChevronRight
-                      className={clsx(
-                        'w-4 h-4 text-text-secondary transition-transform duration-150 ease-out',
-                        task.expanded && 'rotate-90',
-                      )}
-                    />
+                  {/* 展开/折叠箭头（桌面端） / 配置图标（移动端） */}
+                  <div className="flex shrink-0 items-center justify-end pl-1 sm:pl-2 ml-auto">
+                    {isMobile ? (
+                      <span
+                        className={clsx(
+                          'inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-colors',
+                          task.expanded
+                            ? 'bg-accent text-white'
+                            : 'bg-bg-tertiary text-text-secondary active:bg-bg-hover',
+                        )}
+                      >
+                        <SlidersHorizontal className="w-3.5 h-3.5" />
+                      </span>
+                    ) : (
+                      <ChevronRight
+                        className={clsx(
+                          'w-4 h-4 text-text-secondary transition-transform duration-150 ease-out',
+                          task.expanded && 'rotate-90',
+                        )}
+                      />
+                    )}
                   </div>
                 </div>
               )}
@@ -1036,7 +1081,18 @@ export function TaskItem({ instanceId, task }: TaskItemProps) {
           )}
         </div>
 
-        {/* 删除按钮 - hover 时显示，运行时隐藏 */}
+        {/* 移动端更多操作按钮（替代右键菜单） */}
+        {!isEditing && (
+          <button
+            onClick={(e) => handleContextMenu(e)}
+            className="sm:hidden p-1.5 rounded-md text-text-muted hover:bg-bg-hover hover:text-text-primary transition-colors"
+            title={t('common.edit')}
+          >
+            <MoreVertical className="w-4 h-4" />
+          </button>
+        )}
+
+        {/* 删除按钮 - 移动端常驻显示，桌面端 hover 时显示，运行时隐藏 */}
         {!isEditing && canDelete && (
           <button
             onClick={() => {
@@ -1047,7 +1103,7 @@ export function TaskItem({ instanceId, task }: TaskItemProps) {
               setShowDeleteConfirm(true);
             }}
             className={clsx(
-              'p-1 rounded opacity-0 group-hover:opacity-100 transition-all',
+              'p-1.5 sm:p-1 rounded-md opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all',
               'text-text-muted hover:bg-error/10 hover:text-error',
             )}
             title={t('taskItem.remove')}
@@ -1057,8 +1113,8 @@ export function TaskItem({ instanceId, task }: TaskItemProps) {
         )}
       </div>
 
-      {/* 展开面板（描述和/或选项）- 使用 grid 动画实现平滑展开/折叠 */}
-      {canExpand && (
+      {/* 桌面端原位展开面板（描述和/或选项） */}
+      {canExpand && !isMobile && (
         <div
           className="grid transition-[grid-template-rows] duration-150 ease-out"
           style={{ gridTemplateRows: task.expanded ? '1fr' : '0fr' }}
@@ -1106,6 +1162,68 @@ export function TaskItem({ instanceId, task }: TaskItemProps) {
             </div>
           </div>
         </div>
+      )}
+
+      {/* 移动端专属：任务配置 Bottom Sheet 全宽大抽屉 */}
+      {canExpand && isMobile && (
+        <MobileSheet
+          open={!!task.expanded}
+          onClose={() => toggleTaskExpanded(instanceId, task.id)}
+          title={displayName}
+          icon={<SlidersHorizontal className="w-4 h-4" />}
+          maxHeightClassName="max-h-[86dvh]"
+          zIndexClassName="z-[10000]"
+          headerActions={
+            <button
+              type="button"
+              disabled={isInstanceRunning || isIncompatible}
+              onClick={() => {
+                toggleTaskExpanded(instanceId, task.id);
+                void handleRunSingle();
+              }}
+              className={clsx(
+                'inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors',
+                isInstanceRunning || isIncompatible
+                  ? 'bg-bg-tertiary text-text-muted opacity-50 cursor-not-allowed'
+                  : 'bg-accent/15 text-accent active:bg-accent/25',
+              )}
+            >
+              <Play className="w-3.5 h-3.5" />
+              <span>{t('contextMenu.runSingleTask')}</span>
+            </button>
+          }
+        >
+          <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4 bg-bg-tertiary/50">
+            {hasDescription && (
+              <div className="p-3 rounded-xl bg-bg-secondary border border-border/70">
+                <DescriptionContent
+                  html={resolvedDescription.html}
+                  loading={resolvedDescription.loading}
+                  type={resolvedDescription.type}
+                  loaded={resolvedDescription.loaded}
+                  error={resolvedDescription.error}
+                />
+              </div>
+            )}
+            {isIncompatible && (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-warning/10 text-warning text-xs">
+                <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                <span>{incompatibleReason}</span>
+              </div>
+            )}
+            {hasOptions && (
+              <OptionListRenderer
+                instanceId={instanceId}
+                taskId={task.id}
+                optionKeys={taskDef.option || []}
+                optionValues={task.optionValues}
+                disabled={!canEditOptions || isIncompatible}
+                currentControllerName={currentControllerName}
+                currentResourceName={currentResourceName}
+              />
+            )}
+          </div>
+        </MobileSheet>
       )}
 
       {/* 右键菜单 */}

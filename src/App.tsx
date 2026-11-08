@@ -58,7 +58,7 @@ async function getGlobalShortcut() {
   return _globalShortcutModule;
 }
 import { loggers } from '@/utils/logger';
-import { setBackendPort, getApiBase, apiGet } from '@/utils/backendApi';
+import { getApiBase, apiGet } from '@/utils/backendApi';
 import { getAllLogsFromBackend } from '@/utils/logStdout';
 import { useMaaCallbackLogger, useMaaAgentLogger } from '@/utils/useMaaCallbackLogger';
 import { getInterfaceLangKey } from '@/i18n';
@@ -89,7 +89,8 @@ import { ConnectionLostOverlay } from './components/app/ConnectionLostOverlay';
 import { WebUIBetaBanner } from './components/app/WebUIBetaBanner';
 import { startGlobalCallbackListener } from './components/connection/callbackCache';
 import { useIsMobile } from '@/hooks/useIsMobile';
-import { ScrollText } from 'lucide-react';
+import { MobileSheet } from './components/ui/MobileSheet';
+import { ListTodo, Monitor, LayoutGrid, Settings } from 'lucide-react';
 import { defaultConfig, defaultWindowSize, isValidMxuConfig } from '@/types/config';
 
 const log = loggers.app;
@@ -156,6 +157,7 @@ function App() {
   // 页面过渡状态
   const [isSettingsExiting, setIsSettingsExiting] = useState(false);
   const [isDashboardExiting, setIsDashboardExiting] = useState(false);
+  const [mobileTab, setMobileTab] = useState<'tasks' | 'monitor'>('tasks');
 
   const { t } = useTranslation();
   const isMobile = useIsMobile();
@@ -209,6 +211,9 @@ function App() {
     onboardingCompleted,
     backgroundImage,
     backgroundOpacity,
+    activeInstanceId,
+    instances,
+    setScreenshotPanelExpanded,
   } = useAppStore(
     useShallow((state) => ({
       setProjectInterface: state.setProjectInterface,
@@ -251,8 +256,18 @@ function App() {
       onboardingCompleted: state.onboardingCompleted,
       backgroundImage: state.backgroundImage,
       backgroundOpacity: state.backgroundOpacity,
+      activeInstanceId: state.activeInstanceId,
+      instances: state.instances,
+      setScreenshotPanelExpanded: state.setScreenshotPanelExpanded,
     })),
   );
+
+  // 移动端切换到「监控」页时，强制展开实时画面面板
+  useEffect(() => {
+    if (isMobile && mobileTab === 'monitor' && !dashboardView) {
+      setScreenshotPanelExpanded(true);
+    }
+  }, [isMobile, mobileTab, dashboardView, setScreenshotPanelExpanded]);
 
   // 转换背景图片为 Blob URL
   useEffect(() => {
@@ -579,16 +594,23 @@ function App() {
 
       setIcon();
     } else {
-      // 浏览器环境：更新 <link rel="icon"> favicon
+      // 浏览器环境：更新所有 <link rel="icon"> 与 <link rel="apple-touch-icon">
       loadIconAsDataUrl(projectInterface.icon, basePath, translations).then((url) => {
         if (!url) return;
-        let link = document.querySelector<HTMLLinkElement>("link[rel~='icon']");
-        if (!link) {
-          link = document.createElement('link');
+        const iconLinks = document.querySelectorAll<HTMLLinkElement>(
+          "link[rel~='icon'], link[rel='apple-touch-icon']",
+        );
+        if (iconLinks.length === 0) {
+          const link = document.createElement('link');
           link.rel = 'icon';
+          link.href = url;
           document.head.appendChild(link);
+        } else {
+          iconLinks.forEach((link) => {
+            link.type = 'image/png';
+            link.href = url;
+          });
         }
-        link.href = url;
       });
     }
   }, [projectInterface, language, interfaceTranslations, basePath]);
@@ -841,12 +863,8 @@ function App() {
       // 完成配置加载后，允许后续状态变更自动保存
       setConfigPersistenceReady(true);
 
-      // 浏览器环境：设置后端直连端口并建立 WebSocket 连接
-      if (!isTauri() && result.webServerPort) {
-        setBackendPort(result.webServerPort);
-        wsService.setServerPort(result.webServerPort);
-        wsService.connect();
-      } else if (!isTauri()) {
+      // 浏览器环境：建立 WebSocket 连接（同源/反代下走相对 /api/ws，跨端口探测时已由 interfaceLoader 设置直连端口）
+      if (!isTauri()) {
         wsService.connect();
       }
 
@@ -1817,6 +1835,127 @@ function App() {
     />
   );
 
+  const mobileBottomNav = isMobile ? (
+    <nav className="shrink-0 bg-bg-secondary border-t border-border pb-[env(safe-area-inset-bottom)] select-none">
+      <div className="grid grid-cols-4 h-14">
+        <button
+          type="button"
+          onClick={() => {
+            if (currentPage === 'settings') closeSettingsWithAnimation();
+            if (dashboardView) closeDashboardWithAnimation();
+            setMobileTab('tasks');
+          }}
+          className={`flex flex-col items-center justify-center gap-0.5 transition-colors ${
+            currentPage !== 'settings' && !dashboardView && mobileTab === 'tasks'
+              ? 'text-accent'
+              : 'text-text-secondary hover:text-text-primary'
+          }`}
+        >
+          <div
+            className={`px-4 py-0.5 rounded-full transition-colors ${
+              currentPage !== 'settings' && !dashboardView && mobileTab === 'tasks'
+                ? 'bg-accent/15'
+                : ''
+            }`}
+          >
+            <ListTodo className="w-5 h-5" />
+          </div>
+          <span className="text-[11px] font-medium leading-tight">
+            {t('taskList.title', '任务')}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            if (currentPage === 'settings') closeSettingsWithAnimation();
+            if (dashboardView) closeDashboardWithAnimation();
+            setMobileTab('monitor');
+            setScreenshotPanelExpanded(true);
+          }}
+          className={`relative flex flex-col items-center justify-center gap-0.5 transition-colors ${
+            currentPage !== 'settings' && !dashboardView && mobileTab === 'monitor'
+              ? 'text-accent'
+              : 'text-text-secondary hover:text-text-primary'
+          }`}
+        >
+          <div
+            className={`relative px-4 py-0.5 rounded-full transition-colors ${
+              currentPage !== 'settings' && !dashboardView && mobileTab === 'monitor'
+                ? 'bg-accent/15'
+                : ''
+            }`}
+          >
+            <Monitor className="w-5 h-5" />
+            {instances.find((i) => i.id === activeInstanceId)?.isRunning && (
+              <span className="absolute top-0.5 right-2.5 w-2 h-2 rounded-full bg-success animate-pulse" />
+            )}
+          </div>
+          <span className="text-[11px] font-medium leading-tight">
+            {t('screenshot.title', '监控')}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            if (currentPage === 'settings') {
+              closeSettingsWithAnimation();
+              setDashboardView(true);
+              return;
+            }
+            if (dashboardView) {
+              closeDashboardWithAnimation();
+            } else {
+              setDashboardView(true);
+            }
+          }}
+          className={`flex flex-col items-center justify-center gap-0.5 transition-colors ${
+            currentPage !== 'settings' && dashboardView
+              ? 'text-accent'
+              : 'text-text-secondary hover:text-text-primary'
+          }`}
+        >
+          <div
+            className={`px-4 py-0.5 rounded-full transition-colors ${
+              currentPage !== 'settings' && dashboardView ? 'bg-accent/15' : ''
+            }`}
+          >
+            <LayoutGrid className="w-5 h-5" />
+          </div>
+          <span className="text-[11px] font-medium leading-tight">
+            {t('dashboard.title', '中控')}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            if (currentPage !== 'settings') {
+              setCurrentPage('settings');
+            }
+          }}
+          className={`flex flex-col items-center justify-center gap-0.5 transition-colors ${
+            currentPage === 'settings'
+              ? 'text-accent'
+              : 'text-text-secondary hover:text-text-primary'
+          }`}
+        >
+          <div
+            className={`px-4 py-0.5 rounded-full transition-colors ${
+              currentPage === 'settings' ? 'bg-accent/15' : ''
+            }`}
+          >
+            <Settings className="w-5 h-5" />
+          </div>
+          <span className="text-[11px] font-medium leading-tight">
+            {t('titleBar.settings', '设置')}
+          </span>
+        </button>
+      </div>
+    </nav>
+  ) : null;
+
   // 设置页面
   if (currentPage === 'settings') {
     return (
@@ -1853,6 +1992,7 @@ function App() {
               onToggleAddPanel={() => setShowAddTaskPanel(!showAddTaskPanel)}
             />
           </div>
+          {mobileBottomNav}
         </div>
         {toaster}
       </div>
@@ -1975,64 +2115,72 @@ function App() {
         {dashboardView ? (
           <div
             key="dashboard-view"
-            className={`flex-1 min-h-0 ${isDashboardExiting ? 'page-slide-top-exit' : 'page-slide-top-enter'}`}
+            className={`flex-1 min-h-0 flex flex-col ${isDashboardExiting ? 'page-slide-top-exit' : 'page-slide-top-enter'}`}
           >
-            <Suspense fallback={null}>
-              <LazyDashboardView onClose={closeDashboardWithAnimation} />
-            </Suspense>
-          </div>
-        ) : isMobile ? (
-          /* 移动端竖屏布局：单列纵向堆叠 */
-          <div key="main-view-mobile" className="flex-1 flex flex-col min-h-0 overflow-hidden">
-            {/* 可滚动主内容区 */}
-            <div className="flex-1 overflow-y-auto">
-              {/* 连接设置 */}
-              <div className="p-2">
-                <ConnectionPanel />
-              </div>
-
-              {/* 实时截图 */}
-              <div className="p-2">
-                <ScreenshotPanel />
-              </div>
-
-              {/* 任务列表 */}
-              <TaskList />
-
-              {/* 添加任务面板 */}
-              <div
-                className="grid transition-[grid-template-rows] duration-150 ease-out"
-                style={{ gridTemplateRows: showAddTaskPanel ? '1fr' : '0fr' }}
-              >
-                <div className="overflow-hidden min-h-0">
-                  <AddTaskPanel />
-                </div>
-              </div>
-
-              {/* 工具栏（任务列表下方） */}
+            <div className="flex-1 min-h-0">
+              <Suspense fallback={null}>
+                <LazyDashboardView onClose={closeDashboardWithAnimation} />
+              </Suspense>
+            </div>
+            {/*
+              保持 Toolbar 在中控台视图下挂载（隐藏状态），
+              以便 taskStartService.start(...) 和全局快捷键在中控台也能正常工作（自动连接、启动 MuMu 等）。
+            */}
+            <div className="hidden">
               <Toolbar
                 showAddPanel={showAddTaskPanel}
                 onToggleAddPanel={() => setShowAddTaskPanel(!showAddTaskPanel)}
               />
-
-              {/* 运行日志 */}
-              <div className="p-2">
-                <LogsPanel />
-              </div>
             </div>
+          </div>
+        ) : isMobile ? (
+          /* 移动端 App 级分栏视图：任务页 / 上画面下日志同屏监控页 + 常驻工具栏 */
+          <div key="main-view-mobile" className="flex-1 flex flex-col min-h-0 overflow-hidden">
+            {mobileTab === 'tasks' ? (
+              <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+                {/* 顶部连接状态/配置栏 */}
+                <div className="shrink-0 p-2 pb-1">
+                  <ConnectionPanel />
+                </div>
 
-            {/* 浮动按钮：定位到运行日志 */}
-            <button
-              type="button"
-              onClick={() =>
-                document.getElementById('logs-panel')?.scrollIntoView({ behavior: 'smooth' })
-              }
-              className="fixed bottom-4 right-4 z-50 p-3 rounded-full bg-accent text-white shadow-lg active:bg-accent-hover transition-colors"
-              aria-label={t('logs.scrollToLogs')}
-              title={t('logs.scrollToLogs')}
-            >
-              <ScrollText className="w-5 h-5" />
-            </button>
+                {/* 独立滚动任务列表区 */}
+                <TaskList />
+
+                {/* 移动端添加任务底部大抽屉（复用 MobileSheet） */}
+                <MobileSheet
+                  open={showAddTaskPanel}
+                  onClose={() => setShowAddTaskPanel(false)}
+                  heightClassName="h-[80dvh]"
+                  maxHeightClassName="max-h-[85dvh]"
+                  zIndexClassName="z-[10000]"
+                >
+                  <AddTaskPanel />
+                </MobileSheet>
+              </div>
+            ) : (
+              /* 同屏监控页：上半屏 16:9 实时画面 + 下半屏自适应实时日志 */
+              <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+                <div className="shrink-0 p-2 pb-1">
+                  <ScreenshotPanel />
+                </div>
+                <div className="flex-1 min-h-0 p-2 pt-1 flex flex-col overflow-hidden">
+                  <LogsPanel />
+                </div>
+              </div>
+            )}
+
+            {/* 底部常驻工具栏（单实例挂载，支持在任务页和监控页随时启停） */}
+            <Toolbar
+              showAddPanel={showAddTaskPanel}
+              onToggleAddPanel={() => {
+                if (mobileTab !== 'tasks') {
+                  setMobileTab('tasks');
+                  setShowAddTaskPanel(true);
+                } else {
+                  setShowAddTaskPanel(!showAddTaskPanel);
+                }
+              }}
+            />
           </div>
         ) : (
           /* 桌面端横向分栏布局 */
@@ -2103,6 +2251,9 @@ function App() {
             )}
           </div>
         )}
+
+        {/* 移动端 Material Design 3 风格底部导航栏 */}
+        {mobileBottomNav}
       </div>
       {toaster}
     </div>

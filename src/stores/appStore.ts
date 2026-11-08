@@ -487,6 +487,7 @@ export const useAppStore = create<AppState>()(
 
     removeInstance: (id) => {
       get().clearControllerRuntimeState(id);
+      void maaService.destroyInstance(id).catch(() => {});
 
       set((state) => {
         const instanceToClose = state.instances.find((i) => i.id === id);

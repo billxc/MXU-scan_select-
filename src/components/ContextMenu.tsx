@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import clsx from 'clsx';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import {
   Plus,
   Copy,
@@ -96,17 +97,24 @@ function MenuItemComponent({
   item,
   onClose,
   submenuDirection,
+  isMobile = false,
   depth = 0,
 }: {
   item: MenuItem;
   onClose: () => void;
   submenuDirection: 'left' | 'right';
+  isMobile?: boolean;
   depth?: number;
 }) {
   const hasChildren = !!item.children?.length;
+  const [expanded, setExpanded] = useState(false);
 
   const handleClick = () => {
-    if (item.disabled || hasChildren) return;
+    if (item.disabled) return;
+    if (hasChildren) {
+      setExpanded((prev) => !prev);
+      return;
+    }
     item.onClick?.();
     onClose();
   };
@@ -116,6 +124,56 @@ function MenuItemComponent({
   }
 
   const Icon = item.icon;
+
+  if (isMobile) {
+    return (
+      <div className={clsx(depth > 0 && 'pl-4')}>
+        <button
+          onClick={handleClick}
+          disabled={item.disabled}
+          aria-expanded={hasChildren ? expanded : undefined}
+          className={clsx(
+            'w-full flex items-center gap-3 px-4 py-3 text-base text-left rounded-xl transition-colors',
+            item.disabled
+              ? 'text-text-muted opacity-50 cursor-not-allowed'
+              : item.danger
+                ? 'text-error active:bg-error/10'
+                : 'text-text-primary active:bg-bg-hover',
+          )}
+        >
+          {item.checked !== undefined && (
+            <span className="w-5 h-5 flex items-center justify-center">
+              {item.checked && <Check className="w-4 h-4 text-accent" />}
+            </span>
+          )}
+          {Icon && <Icon className="w-5 h-5 flex-shrink-0" />}
+          <span className="flex-1 font-medium">{item.label}</span>
+          {hasChildren && (
+            <ChevronRight
+              className={clsx(
+                'w-4 h-4 text-text-muted transition-transform',
+                expanded && 'rotate-90',
+              )}
+            />
+          )}
+        </button>
+        {hasChildren && !item.disabled && expanded && (
+          <div className="mt-0.5 mb-1 border-l-2 border-border ml-4 space-y-0.5">
+            {item.children!.map((child, index) => (
+              <MenuItemComponent
+                key={child.divider ? `divider-${index}` : child.id}
+                item={child}
+                onClose={onClose}
+                submenuDirection={submenuDirection}
+                isMobile={true}
+                depth={depth + 1}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="relative group/menu-item">
@@ -157,7 +215,9 @@ function MenuItemComponent({
         <div
           role="menu"
           className={clsx(
-            'hidden group-hover/menu-item:block group-focus-within/menu-item:block',
+            expanded
+              ? 'block'
+              : 'hidden group-hover/menu-item:block group-focus-within/menu-item:block',
             'absolute top-0 min-w-[180px] max-w-[280px]',
             'bg-bg-secondary border border-border rounded-lg shadow-lg',
             'py-1 px-1',
@@ -172,6 +232,7 @@ function MenuItemComponent({
               item={child}
               onClose={onClose}
               submenuDirection={submenuDirection}
+              isMobile={false}
               depth={depth + 1}
             />
           ))}
@@ -183,6 +244,7 @@ function MenuItemComponent({
 
 // 右键菜单组件
 export function ContextMenu({ items, position, onClose }: ContextMenuProps) {
+  const isMobile = useIsMobile();
   const menuRef = useRef<HTMLDivElement>(null);
   const [submenuDirection, setSubmenuDirection] = useState<'left' | 'right'>('right');
 
@@ -213,9 +275,9 @@ export function ContextMenu({ items, position, onClose }: ContextMenuProps) {
     };
   }, [onClose]);
 
-  // 调整菜单位置，确保不超出视口
+  // 调整菜单位置，确保不超出视口（仅桌面端需要）
   useEffect(() => {
-    if (!menuRef.current) return;
+    if (isMobile || !menuRef.current) return;
 
     const menu = menuRef.current;
     const rect = menu.getBoundingClientRect();
@@ -241,7 +303,42 @@ export function ContextMenu({ items, position, onClose }: ContextMenuProps) {
 
     menu.style.left = `${x}px`;
     menu.style.top = `${y}px`;
-  }, [position]);
+  }, [position, isMobile]);
+
+  if (isMobile) {
+    return createPortal(
+      <div
+        className="fixed inset-0 z-[10060] bg-black/50 backdrop-blur-xs flex flex-col justify-end animate-in fade-in duration-150"
+        onClick={(e) => {
+          e.stopPropagation();
+          onClose();
+        }}
+        onContextMenu={(e) => e.preventDefault()}
+      >
+        <div
+          ref={menuRef}
+          className="mxu-overlay-surface w-full max-h-[82dvh] bg-bg-secondary rounded-t-2xl border-t border-border shadow-2xl flex flex-col overflow-hidden pb-[env(safe-area-inset-bottom)]"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex justify-center pt-2 pb-1 shrink-0">
+            <div className="w-10 h-1 rounded-full bg-border-strong/60" />
+          </div>
+          <div className="overflow-y-auto px-2 py-2 space-y-0.5">
+            {items.map((item, index) => (
+              <MenuItemComponent
+                key={item.divider ? `divider-${index}` : item.id}
+                item={item}
+                onClose={onClose}
+                submenuDirection={submenuDirection}
+                isMobile={true}
+              />
+            ))}
+          </div>
+        </div>
+      </div>,
+      document.body,
+    );
+  }
 
   return createPortal(
     <div
@@ -261,6 +358,7 @@ export function ContextMenu({ items, position, onClose }: ContextMenuProps) {
           item={item}
           onClose={onClose}
           submenuDirection={submenuDirection}
+          isMobile={false}
         />
       ))}
     </div>,

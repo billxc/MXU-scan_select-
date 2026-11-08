@@ -35,6 +35,7 @@ import {
 import { getPretaskItems, pretaskName, pretaskItemId, buildPretaskDef } from '@/types/pretasks';
 import { generateId } from '@/stores/helpers';
 import { getProcessNameFromPath } from '@/utils/paths';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import clsx from 'clsx';
 
 const log = loggers.task;
@@ -169,6 +170,7 @@ function createDefaultAction(defaultProgram?: string): ActionConfig {
 
 export function AddTaskPanel() {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const [searchQuery, setSearchQuery] = useState('');
   const {
     projectInterface,
@@ -707,25 +709,33 @@ export function AddTaskPanel() {
   }
 
   return (
-    <div id="add-task-panel" className="border-t border-border bg-bg-tertiary">
-      {/* 拖拽调整高度的把手 */}
-      <div
-        role="separator"
-        tabIndex={0}
-        aria-orientation="horizontal"
-        aria-valuemin={addTaskPanelHeightMin}
-        aria-valuemax={addTaskPanelHeightMax}
-        aria-valuenow={addTaskPanelHeight}
-        aria-label={t('addTaskPanel.resizeHandleAriaLabel')}
-        onMouseDown={handleResizeStart}
-        onKeyDown={handleResizeKeyDown}
-        className="flex items-center justify-center h-2 cursor-ns-resize group hover:bg-accent/10 transition-colors"
-      >
-        <GripHorizontal className="w-4 h-3 text-text-muted/40 group-hover:text-accent/60 transition-colors" />
-      </div>
+    <div
+      id="add-task-panel"
+      className={clsx(
+        'border-t border-border bg-bg-tertiary',
+        isMobile && 'flex flex-col flex-1 min-h-0 bg-bg-secondary border-t-0',
+      )}
+    >
+      {/* 拖拽调整高度的把手（仅桌面端） */}
+      {!isMobile && (
+        <div
+          role="separator"
+          tabIndex={0}
+          aria-orientation="horizontal"
+          aria-valuemin={addTaskPanelHeightMin}
+          aria-valuemax={addTaskPanelHeightMax}
+          aria-valuenow={addTaskPanelHeight}
+          aria-label={t('addTaskPanel.resizeHandleAriaLabel')}
+          onMouseDown={handleResizeStart}
+          onKeyDown={handleResizeKeyDown}
+          className="flex items-center justify-center h-2 cursor-ns-resize group hover:bg-accent/10 transition-colors"
+        >
+          <GripHorizontal className="w-4 h-3 text-text-muted/40 group-hover:text-accent/60 transition-colors" />
+        </div>
+      )}
 
       {/* 搜索框 */}
-      <div className="px-2 pb-2 border-b border-border">
+      <div className="px-3 sm:px-2 pb-2.5 sm:pb-2 pt-1 sm:pt-0 border-b border-border shrink-0">
         <div className="flex items-center gap-1.5">
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
@@ -735,7 +745,7 @@ export function AddTaskPanel() {
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder={t('addTaskPanel.searchPlaceholder')}
               className={clsx(
-                'w-full pl-9 pr-3 py-2 text-sm rounded-md border border-border',
+                'w-full pl-9 pr-3 py-2.5 sm:py-2 text-base sm:text-sm rounded-xl sm:rounded-md border border-border',
                 'bg-bg-secondary text-text-primary placeholder:text-text-muted',
                 'focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/20',
               )}
@@ -746,13 +756,16 @@ export function AddTaskPanel() {
             className="shrink-0 p-2 rounded-md text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors"
             title={t('addTaskPanel.collapse')}
           >
-            <ChevronsDown className="w-4 h-4" />
+            <ChevronsDown className="w-5 h-5 sm:w-4 sm:h-4" />
           </button>
         </div>
       </div>
 
       {/* 任务列表（包含特殊任务） */}
-      <div className="overflow-y-auto" style={{ maxHeight: addTaskPanelHeight }}>
+      <div
+        className={clsx('overflow-y-auto', isMobile && 'flex-1 min-h-0 p-1')}
+        style={isMobile ? undefined : { maxHeight: addTaskPanelHeight }}
+      >
         {filteredTasks.length === 0 && !instance ? (
           <div className="p-4 text-center text-sm text-text-muted">
             {t('addTaskPanel.noResults')}
@@ -839,7 +852,11 @@ export function AddTaskPanel() {
                     </button>
                     {/* 动态渲染所有注册的特殊任务按钮 */}
                     {specialTasks.map((specialTask) => {
-                      return (
+                      const descText =
+                        typeof specialTask.taskDef.description === 'string'
+                          ? t(specialTask.taskDef.description)
+                          : undefined;
+                      const buttonNode = (
                         <button
                           key={specialTask.taskName}
                           onClick={() => handleAddSpecialTask(specialTask)}
@@ -850,6 +867,19 @@ export function AddTaskPanel() {
                         >
                           <span>{t(specialTask.taskDef.label || specialTask.taskName)}</span>
                         </button>
+                      );
+                      return descText ? (
+                        <Tooltip
+                          key={specialTask.taskName}
+                          content={<span className="text-text-secondary">{descText}</span>}
+                          side="top"
+                          align="center"
+                          maxWidth="max-w-xs"
+                        >
+                          {buttonNode}
+                        </Tooltip>
+                      ) : (
+                        buttonNode
                       );
                     })}
                   </div>

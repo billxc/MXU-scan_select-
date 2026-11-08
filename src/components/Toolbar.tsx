@@ -22,7 +22,13 @@ import {
   computeResourcePaths,
   requiresUnlockedWorkstation,
 } from '@/utils';
-import { getMxuSpecialTask } from '@/types/specialTasks';
+import {
+  getMxuSpecialTask,
+  MXU_MUMU_START_TASK_NAME,
+  MXU_MUMU_START_ENTRY,
+  MXU_MUMU_STOP_TASK_NAME,
+  MXU_MUMU_STOP_ENTRY,
+} from '@/types/specialTasks';
 import {
   isPretaskName,
   getPretaskItem,
@@ -42,6 +48,7 @@ import {
   getLinuxDiscoveryNeeds,
   isDesktopWindowControllerType,
 } from '@/utils/controller';
+import { getMuMuBinding, saveAdbDevice } from '@/utils/mumu';
 import { buildPlayCoverControllerConfig } from '@/utils/playCoverController';
 import { SchedulePanel } from './SchedulePanel';
 import type {
@@ -57,6 +64,7 @@ import { PermissionModal } from './toolbar/PermissionModal';
 import { ScheduleButton } from './toolbar/ScheduleButton';
 import {
   startGlobalCallbackListener,
+  waitForCtrlResult,
   waitForResResult,
 } from '@/components/connection/callbackCache';
 import { scheduleService } from '@/services/scheduleService';
@@ -64,7 +72,6 @@ import { stopInstanceTasks } from '@/services/taskStopService';
 import { taskStartService, type TaskStartOptions } from '@/services/taskStartService';
 import { isTaskSelectedForRun, filterTasksForRun } from '@/utils/taskRunFilter';
 import { isTauri } from '@/utils/paths';
-import { onStateChanged } from '@/services/wsService';
 import { buildPiEnvVars } from '@/utils/piEnv';
 import {
   formatCheckboxCountViolation,
@@ -434,7 +441,7 @@ export function Toolbar({ showAddPanel, onToggleAddPanel, className }: ToolbarPr
 
       const controller = projectInterface?.controller.find((c) => c.name === controllerName);
       const resource = projectInterface?.resource.find((r) => r.name === resourceName);
-      const savedDevice = targetInstance.savedDevice;
+      let savedDevice = targetInstance.savedDevice;
 
       // 检查是否有保存的设备配置
       const hasSavedDevice = Boolean(
@@ -536,6 +543,32 @@ export function Toolbar({ showAddPanel, onToggleAddPanel, className }: ToolbarPr
               type: 'error',
               message: t('action.pretaskFailed', { error: String(err) }),
             });
+          } finally {
+            await endPreActionControl(targetId);
+          }
+        }
+
+        const hasMumuStartTask = compatibleTasks.some((task) => {
+          if (task.taskName === MXU_MUMU_START_TASK_NAME || task.taskName === '启动MuMu模拟器') {
+            return true;
+          }
+          const def = projectInterface?.task.find((t) => t.name === task.taskName);
+          return def?.entry === MXU_MUMU_START_ENTRY;
+        });
+        const hasMumuStopTask = compatibleTasks.some((task) => {
+          if (task.taskName === MXU_MUMU_STOP_TASK_NAME || task.taskName === '关闭MuMu模拟器') {
+            return true;
+          }
+          const def = projectInterface?.task.find((t) => t.name === task.taskName);
+          return def?.entry === MXU_MUMU_STOP_ENTRY;
+        });
+        if (controller.type === 'Adb' && savedDevice?.mumu && hasMumuStartTask) {
+          await beginPreActionControl(targetId);
+          try {
+            onPhaseChange?.('searching');
+            addLog(targetId, { type: 'info', message: t('controller.mumu.starting') });
+            await maaService.prepareMuMu(targetId, savedDevice.mumu);
+            throwIfPreActionStopped(targetId);
           } finally {
             await endPreActionControl(targetId);
           }
@@ -654,7 +687,8 @@ export function Toolbar({ showAddPanel, onToggleAddPanel, className }: ToolbarPr
                     const { classRegex, titleRegex } = getDesktopWindowFilters(controller);
                     const windows = await maaService.findWin32Windows(classRegex, titleRegex);
                     if (savedDevice?.windowName) {
-                      deviceFound = windows.some((w) => w.window_name === savedDevice.windowName);
+                      const expectedWindow = savedDevice.windowName;
+                      deviceFound = windows.some((w) => w.window_name === expectedWindow);
                     } else {
                       deviceFound = windows.length > 0;
                     }
@@ -803,14 +837,70 @@ export function Toolbar({ showAddPanel, onToggleAddPanel, className }: ToolbarPr
             log.info(`实例 ${targetInstance.name}: 自动连接已保存的设备...`);
             onPhaseChange?.('searching');
 
-            if (controllerType === 'Adb' && savedDevice.adbDeviceName) {
+            if (
+              controllerType === 'Adb' &&
+              (savedDevice.adbDeviceName || savedDevice.adbDeviceAddress || savedDevice.mumu)
+            ) {
               const devices = await maaService.findAdbDevices();
-              const matchedDevice = findMatchingAdbDevice(devices, savedDevice);
+              let matchedDevice = findMatchingAdbDevice(devices, savedDevice);
+              if (matchedDevice && !hasMumuStartTask) {
+                const matchedBinding = getMuMuBinding(matchedDevice.config);
+                if (matchedBinding) {
+                  const status = await maaService
+                    .queryMuMuStatus(matchedBinding)
+                    .catch(() => null);
+                  if (status && (!status.exists || !status.is_process_started || !status.is_android_started)) {
+                    matchedDevice = undefined;
+                  }
+                }
+              }
+
+              // 如果保存的旧设备未运行，且当前恰好只有 1 台正在运行的设备（用户换了虚拟机启动），自动切换到该设备
+              if (!matchedDevice && !hasMumuStartTask && devices.length > 0) {
+                const activeDevices = [];
+                for (const d of devices) {
+                  const b = getMuMuBinding(d.config);
+                  if (b) {
+                    const st = await maaService.queryMuMuStatus(b).catch(() => null);
+                    if (st && st.exists && st.is_process_started && st.is_android_started) {
+                      activeDevices.push(d);
+                    }
+                  } else {
+                    activeDevices.push(d);
+                  }
+                }
+                if (activeDevices.length === 1) {
+                  matchedDevice = activeDevices[0];
+                  addLog(targetId, {
+                    type: 'info',
+                    message: t('taskList.autoConnect.autoSelectedDevice', {
+                      name: matchedDevice.name || matchedDevice.address,
+                    }),
+                  });
+                }
+              }
+
               if (!matchedDevice) {
                 return failStart(
-                  t('taskList.autoConnect.deviceNotFound', { name: savedDevice.adbDeviceName }),
+                  t('taskList.autoConnect.deviceNotFound', {
+                    name: savedDevice.adbDeviceName || savedDevice.adbDeviceAddress || 'MuMu',
+                  }),
                 );
               }
+              const updatedSaved = saveAdbDevice(matchedDevice, savedDevice.mumu);
+              const nextSavedDevice = {
+                ...savedDevice,
+                ...updatedSaved,
+                mumu: updatedSaved.mumu ?? savedDevice.mumu,
+              };
+              if (
+                matchedDevice.address !== savedDevice.adbDeviceAddress ||
+                matchedDevice.name !== savedDevice.adbDeviceName ||
+                updatedSaved.mumu?.index !== savedDevice.mumu?.index
+              ) {
+                useAppStore.getState().setInstanceSavedDevice(targetId, nextSavedDevice);
+              }
+              savedDevice = nextSavedDevice;
               config = {
                 type: 'Adb',
                 adb_path: matchedDevice.adb_path,
@@ -823,9 +913,10 @@ export function Toolbar({ showAddPanel, onToggleAddPanel, className }: ToolbarPr
               deviceName = matchedDevice.name || matchedDevice.address;
               targetType = 'device';
             } else if (isDesktopWindowControllerType(controllerType) && savedDevice.windowName) {
+              const expectedWindow = savedDevice.windowName;
               const { classRegex, titleRegex } = getDesktopWindowFilters(controller);
               const windows = await maaService.findWin32Windows(classRegex, titleRegex);
-              const matchedWindow = windows.find((w) => w.window_name === savedDevice.windowName);
+              const matchedWindow = windows.find((w) => w.window_name === expectedWindow);
               if (!matchedWindow) {
                 return failStart(
                   t('taskList.autoConnect.windowNotFound', { name: savedDevice.windowName }),
@@ -980,125 +1071,26 @@ export function Toolbar({ showAddPanel, onToggleAddPanel, className }: ToolbarPr
               await waitWithStopCheck(2000, targetId);
             }
 
-            // 提前注册回调收集器，await 完成后再发起连接，避免竞态
-            const collectedCallbacks: Array<{ message: string; details: { ctrl_id?: number } }> =
-              [];
-            const unsubscribe = await maaService.onCallback((message, details) => {
-              if (
-                message === 'Controller.Action.Succeeded' ||
-                message === 'Controller.Action.Failed'
-              ) {
-                collectedCallbacks.push({ message, details });
-              }
-            });
-
-            let ctrlId: number;
-            try {
-              ctrlId = await maaService.connectController(targetId, config);
-            } catch (err) {
-              unsubscribe();
-              throw err;
-            }
+            await startGlobalCallbackListener();
+            const ctrlId = await maaService.connectController(targetId, config);
 
             // 注册 ctrl_id 与设备名/类型的映射
             registerCtrlIdName(targetId, ctrlId, deviceName, targetType);
 
-            // 等待连接完成（同时监听 maa-callback 和 state-changed 两条路径）
-            connectResult = await new Promise<boolean>((resolve) => {
-              let resolved = false;
-
-              const handleSuccess = () => {
-                if (resolved) return;
-                resolved = true;
-                clearTimeout(timeout);
-                unsubscribe();
-                unlistenCb?.();
-                unlistenState?.();
+            // 等待连接完成（使用全局回调缓存 + 后端真实连接状态双重校验）
+            const result = await waitForCtrlResult(ctrlId, 30000);
+            if (result === 'succeeded') {
+              setInstanceConnectionStatus(targetId, 'Connected');
+              connectResult = true;
+            } else {
+              const backendState = await maaService.getInstanceState(targetId).catch(() => null);
+              if (backendState?.connectionStatus === 'Connected') {
                 setInstanceConnectionStatus(targetId, 'Connected');
-                resolve(true);
-              };
-
-              const handleFailure = () => {
-                if (resolved) return;
-                resolved = true;
-                clearTimeout(timeout);
-                unsubscribe();
-                unlistenCb?.();
-                unlistenState?.();
-                resolve(false);
-              };
-
-              const timeout = setTimeout(() => {
-                if (!resolved) {
-                  log.warn(`实例 ${targetInstance.name}: 连接超时`);
-                  handleFailure();
-                }
-              }, 30000);
-
-              // 路径 1：继续监听新的 maa-callback（Controller.Action.Succeeded/Failed）
-              let unlistenCb: (() => void) | undefined;
-              // 路径 2：监听 state-changed（兜底：后端已广播 connected 但 Action.Succeeded 可能因竞态丢失）
-              // Tauri 桌面端走 app.emit() → listen()，WebSocket 端走 wsService
-              let unlistenState: (() => void) | undefined;
-
-              // 检查已收集的回调（注册监听器在 connectController 之前已完成）
-              const match = collectedCallbacks.find((cb) => cb.details.ctrl_id === ctrlId);
-              if (match) {
-                if (match.message === 'Controller.Action.Succeeded') {
-                  handleSuccess();
-                } else {
-                  handleFailure();
-                }
-                return;
-              }
-
-              maaService
-                .onCallback((message, details) => {
-                  if (resolved) return;
-                  if (details.ctrl_id !== ctrlId) return;
-                  if (message === 'Controller.Action.Succeeded') {
-                    handleSuccess();
-                  } else if (message === 'Controller.Action.Failed') {
-                    handleFailure();
-                  }
-                })
-                .then((cb) => {
-                  if (!resolved) {
-                    unlistenCb = cb;
-                  } else {
-                    cb();
-                  }
-                })
-                .catch((err) => {
-                  log.error(`实例 ${targetInstance.name}: 注册 maa-callback 监听失败:`, err);
-                  handleFailure();
-                });
-              const handleStateChanged = (instanceId: string, kind: string) => {
-                if (resolved) return;
-                if (instanceId === targetId && kind === 'connected') {
-                  log.info(`实例 ${targetInstance.name}: 通过 state-changed 兜底判定连接成功`);
-                  handleSuccess();
-                }
-              };
-
-              if (isTauri()) {
-                import('@tauri-apps/api/event')
-                  .then(({ listen }) =>
-                    listen<{ instance_id: string; kind: string }>('state-changed', (event) =>
-                      handleStateChanged(event.payload.instance_id, event.payload.kind),
-                    ),
-                  )
-                  .then((dispose) => {
-                    if (resolved) dispose();
-                    else unlistenState = dispose;
-                  })
-                  .catch((err) => {
-                    log.warn('注册 state-changed 监听失败:', err);
-                  });
+                connectResult = true;
               } else {
-                unlistenState = onStateChanged(handleStateChanged);
+                connectResult = false;
               }
-            });
+            }
           }
 
           if (!connectResult) {
@@ -1273,6 +1265,9 @@ export function Toolbar({ showAddPanel, onToggleAddPanel, className }: ToolbarPr
             useAppStore.getState().globalOptionValues,
             projectInterface?.option ?? {},
           ),
+          controller.type === 'Adb' && savedDevice?.mumu && hasMumuStopTask
+            ? { path: savedDevice.mumu.path, index: savedDevice.mumu.index }
+            : undefined,
         );
 
         startedTaskIds.forEach((maaTaskId, index) => {
@@ -1300,7 +1295,8 @@ export function Toolbar({ showAddPanel, onToggleAddPanel, className }: ToolbarPr
         log.error(`实例 ${targetInstance.name}: 任务启动异常:`, err);
 
         const errMsg = err instanceof Error ? err.message : String(err);
-        const cancelled = errMsg === PRE_ACTION_CANCELLED_ERROR;
+        const cancelled =
+          errMsg === PRE_ACTION_CANCELLED_ERROR || errMsg.includes('MUMU_START_CANCELLED');
         if (!cancelled) {
           const localizedErrMsg = errMsg
             .replace('UINPUT_SCREEN_SIZE_REQUIRED', t('controller.uinputDimensionsRequired'))
@@ -1474,6 +1470,11 @@ export function Toolbar({ showAddPanel, onToggleAddPanel, className }: ToolbarPr
       if (preActionControlledInstanceIdRef.current === targetInstanceId) {
         preActionStopRequestedRef.current = true;
         try {
+          const appState = useAppStore.getState();
+          const saved = appState.instances.find((i) => i.id === targetInstanceId)?.savedDevice;
+          if (saved?.mumu) {
+            await maaService.cancelMuMuStart(targetInstanceId).catch(() => {});
+          }
           await maaService.setPreActionStop(targetInstanceId, true);
           keepStoppingForPreAction = true;
         } catch (err) {
@@ -1718,12 +1719,12 @@ export function Toolbar({ showAddPanel, onToggleAddPanel, className }: ToolbarPr
           </span>
         </button>
 
-        {/* 展开/折叠 */}
+        {/* 展开/折叠（桌面端原位展开/折叠所有任务，移动端配置使用 Bottom Sheet 故隐藏） */}
         <button
           onClick={handleCollapseAll}
           disabled={tasks.length === 0}
           className={clsx(
-            'flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-sm transition-colors',
+            'hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-sm transition-colors',
             tasks.length === 0
               ? 'text-text-muted cursor-not-allowed'
               : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary',
@@ -1753,7 +1754,7 @@ export function Toolbar({ showAddPanel, onToggleAddPanel, className }: ToolbarPr
           title={t('taskList.addTask')}
         >
           <Plus className="w-4 h-4" />
-          <span className="hidden sm:inline">{t('taskList.addTask')}</span>
+          <span className="text-xs sm:text-sm">{t('taskList.addTask')}</span>
         </button>
       </div>
 

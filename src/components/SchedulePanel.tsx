@@ -14,6 +14,8 @@ import { useAppStore } from '@/stores/appStore';
 import type { SchedulePolicy } from '@/types/interface';
 import clsx from 'clsx';
 import { ConfirmDialog } from './ConfirmDialog';
+import { useIsMobile } from '@/hooks/useIsMobile';
+import { MobileSheet } from './ui/MobileSheet';
 
 // 生成唯一 ID
 const generateId = () => Math.random().toString(36).substring(2, 9);
@@ -315,6 +317,7 @@ function PolicyCard({
 
 export function SchedulePanel({ instanceId, onClose }: SchedulePanelProps) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const panelRef = useRef<HTMLDivElement>(null);
   const { getActiveInstance, updateInstance } = useAppStore();
   const [expandedPolicyId, setExpandedPolicyId] = useState<string | null>(null);
@@ -323,8 +326,9 @@ export function SchedulePanel({ instanceId, onClose }: SchedulePanelProps) {
   const policies = instance?.schedulePolicies || [];
   const anyEnabled = policies.some((p) => p.enabled);
 
-  // 点击外部关闭面板
+  // 点击外部关闭面板（仅桌面端需要，移动端由 MobileSheet 处理）
   useEffect(() => {
+    if (isMobile) return;
     const handleClickOutside = (e: MouseEvent) => {
       if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
         onClose();
@@ -332,7 +336,7 @@ export function SchedulePanel({ instanceId, onClose }: SchedulePanelProps) {
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [onClose]);
+  }, [onClose, isMobile]);
 
   const handleAddPolicy = useCallback(() => {
     const newPolicy: SchedulePolicy = {
@@ -374,6 +378,86 @@ export function SchedulePanel({ instanceId, onClose }: SchedulePanelProps) {
     updateInstance(instanceId, { schedulePolicies: updatedPolicies });
   }, [anyEnabled, instanceId, policies, updateInstance]);
 
+  const bodyContent = (
+    <>
+      {/* 策略列表 */}
+      <div className={clsx('p-3 space-y-2 overflow-y-auto', isMobile ? 'flex-1 min-h-0' : 'max-h-96')}>
+        {policies.length === 0 ? (
+          <div className="text-center py-6">
+            <Clock className="w-8 h-8 text-text-muted mx-auto mb-2" />
+            <p className="text-sm text-text-muted">{t('schedule.noPolicies')}</p>
+            <p className="text-xs text-text-muted mt-1">{t('schedule.noPoliciesHint')}</p>
+          </div>
+        ) : (
+          policies.map((policy) => (
+            <PolicyCard
+              key={policy.id}
+              policy={policy}
+              onUpdate={(updates) => handleUpdatePolicy(policy.id, updates)}
+              onDelete={() => handleDeletePolicy(policy.id)}
+              isExpanded={expandedPolicyId === policy.id}
+              onToggleExpand={() =>
+                setExpandedPolicyId(expandedPolicyId === policy.id ? null : policy.id)
+              }
+            />
+          ))
+        )}
+      </div>
+
+      {/* 添加按钮 */}
+      <div className="px-3 pb-3 shrink-0">
+        <button
+          onClick={handleAddPolicy}
+          className={clsx(
+            'w-full flex items-center justify-center gap-2 px-3 py-2.5 sm:py-2 rounded-lg',
+            'text-sm text-text-secondary',
+            'border border-dashed border-border',
+            'hover:bg-bg-hover hover:border-border-strong',
+            'transition-colors',
+          )}
+        >
+          <Plus className="w-4 h-4" />
+          <span>{t('schedule.addPolicy')}</span>
+        </button>
+      </div>
+
+      {/* 提示信息 */}
+      <div className="px-4 py-2 border-t border-border bg-bg-tertiary rounded-b-lg shrink-0">
+        <p className="text-xs text-text-muted">{t('schedule.hint')}</p>
+      </div>
+    </>
+  );
+
+  if (isMobile) {
+    return (
+      <MobileSheet
+        open={true}
+        onClose={onClose}
+        title={t('schedule.title')}
+        icon={<Clock className="w-4 h-4" />}
+        headerActions={
+          <button
+            onClick={handleToggleAll}
+            disabled={policies.length === 0}
+            className={clsx(
+              'p-1 rounded hover:bg-bg-hover',
+              policies.length === 0 && 'opacity-50 cursor-not-allowed',
+            )}
+            title={anyEnabled ? t('schedule.disableAll') : t('schedule.enableAll')}
+          >
+            {anyEnabled ? (
+              <ToggleRight className="w-5 h-5 text-accent" />
+            ) : (
+              <ToggleLeft className="w-5 h-5 text-text-muted" />
+            )}
+          </button>
+        }
+      >
+        {bodyContent}
+      </MobileSheet>
+    );
+  }
+
   return (
     <div
       ref={panelRef}
@@ -413,51 +497,7 @@ export function SchedulePanel({ instanceId, onClose }: SchedulePanelProps) {
         </div>
       </div>
 
-      {/* 策略列表 */}
-      <div className="p-3 space-y-2 max-h-96 overflow-y-auto">
-        {policies.length === 0 ? (
-          <div className="text-center py-6">
-            <Clock className="w-8 h-8 text-text-muted mx-auto mb-2" />
-            <p className="text-sm text-text-muted">{t('schedule.noPolicies')}</p>
-            <p className="text-xs text-text-muted mt-1">{t('schedule.noPoliciesHint')}</p>
-          </div>
-        ) : (
-          policies.map((policy) => (
-            <PolicyCard
-              key={policy.id}
-              policy={policy}
-              onUpdate={(updates) => handleUpdatePolicy(policy.id, updates)}
-              onDelete={() => handleDeletePolicy(policy.id)}
-              isExpanded={expandedPolicyId === policy.id}
-              onToggleExpand={() =>
-                setExpandedPolicyId(expandedPolicyId === policy.id ? null : policy.id)
-              }
-            />
-          ))
-        )}
-      </div>
-
-      {/* 添加按钮 */}
-      <div className="px-3 pb-3">
-        <button
-          onClick={handleAddPolicy}
-          className={clsx(
-            'w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg',
-            'text-sm text-text-secondary',
-            'border border-dashed border-border',
-            'hover:bg-bg-hover hover:border-border-strong',
-            'transition-colors',
-          )}
-        >
-          <Plus className="w-4 h-4" />
-          <span>{t('schedule.addPolicy')}</span>
-        </button>
-      </div>
-
-      {/* 提示信息 */}
-      <div className="px-4 py-2 border-t border-border bg-bg-tertiary rounded-b-lg">
-        <p className="text-xs text-text-muted">{t('schedule.hint')}</p>
-      </div>
+      {bodyContent}
     </div>
   );
 }

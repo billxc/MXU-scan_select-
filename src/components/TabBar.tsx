@@ -15,6 +15,8 @@ import {
   GripVertical,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  ChevronUp,
   ChevronsLeft,
   ChevronsRight,
   PanelRightClose,
@@ -22,12 +24,20 @@ import {
   History,
   Share2,
   FileText,
+  Download,
+  MoreHorizontal,
+  Trash2,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { useAppStore } from '@/stores/appStore';
 import { ContextMenu, useContextMenu, type MenuItem } from './ContextMenu';
 import { ConfirmDialog } from './ConfirmDialog';
+import { MobileSheet } from './ui/MobileSheet';
 import { getInterfaceLangKey } from '@/i18n';
 import { exportFileWithToast, exportWithToast } from '@/utils/tabExportImport';
+import { isTauri } from '@/utils/paths';
+import { usePwaInstall } from '@/utils/pwa';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import clsx from 'clsx';
 
 type CloseConfirmData =
@@ -47,6 +57,7 @@ const LazyRecentlyClosedPanel = lazy(async () => {
 
 export function TabBar() {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [closeConfirm, setCloseConfirm] = useState<CloseConfirmData>(null);
@@ -56,6 +67,7 @@ export function TabBar() {
     dragOverIndex: number | null;
   }>({ isDragging: false, draggedIndex: -1, dragOverIndex: null });
   const [showRecentlyClosedPanel, setShowRecentlyClosedPanel] = useState(false);
+  const [showInstanceSheet, setShowInstanceSheet] = useState(false);
   const tabRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const bellButtonRef = useRef<HTMLButtonElement>(null);
   const recentlyClosedButtonRef = useRef<HTMLButtonElement>(null);
@@ -86,13 +98,30 @@ export function TabBar() {
     removeAnimatingTabId,
     startTabCloseAnimation,
     confirmBeforeDelete,
+    instanceConnectionStatus,
   } = useAppStore();
+
+  const activeInstance = instances.find((i) => i.id === activeInstanceId) ?? instances[0];
+  const activeInstanceIndex = Math.max(
+    0,
+    instances.findIndex((i) => i.id === activeInstance?.id),
+  );
+  const isActiveConnected =
+    activeInstance ? instanceConnectionStatus[activeInstance.id] === 'Connected' : false;
 
   // 使用全局状态控制更新面板显示
   const showUpdatePanel = showUpdateDialog;
   const setShowUpdatePanel = setShowUpdateDialog;
 
   const { state: menuState, showAt: showMenuAt, hide: hideMenu } = useContextMenu();
+  const { canInstall, isStandalone, promptInstall } = usePwaInstall();
+
+  const handleInstallPwa = async () => {
+    const res = await promptInstall();
+    if (res === 'ios-manual') {
+      toast.info('iOS 请点击浏览器底部分享按钮，选择「添加到主屏幕」以安装全屏应用');
+    }
+  };
 
   // 当最近关闭列表为空时，自动关闭面板
   useEffect(() => {
@@ -100,6 +129,13 @@ export function TabBar() {
       setShowRecentlyClosedPanel(false);
     }
   }, [recentlyClosed.length]);
+
+  // 切换或新建实例时，确保当前激活标签滚动到水平可视区域内
+  useEffect(() => {
+    if (!activeInstanceId) return;
+    const el = tabRefs.current.get(activeInstanceId);
+    el?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+  }, [activeInstanceId, instances.length]);
 
   const handleNewTab = () => {
     createInstance(t('instance.defaultName'));
@@ -176,10 +212,25 @@ export function TabBar() {
 
   // 右键菜单处理
   const handleTabContextMenu = useCallback(
-    async (e: React.MouseEvent, instanceId: string, instanceName: string) => {
+    async (
+      e: React.MouseEvent,
+      instanceId: string,
+      instanceName: string,
+      anchorPosition?: { x: number; y: number },
+    ) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target?.tagName === 'INPUT' ||
+        target?.tagName === 'TEXTAREA' ||
+        target?.isContentEditable ||
+        target?.closest('input, textarea, [contenteditable="true"]')
+      ) {
+        e.stopPropagation();
+        return;
+      }
       e.preventDefault();
       e.stopPropagation();
-      const position = { x: e.clientX, y: e.clientY };
+      const position = anchorPosition ?? { x: e.clientX, y: e.clientY };
       const instanceIndex = instances.findIndex((i) => i.id === instanceId);
       const isFirst = instanceIndex === 0;
       const isLast = instanceIndex === instances.length - 1;
@@ -379,8 +430,113 @@ export function TabBar() {
 
   return (
     <div className="flex items-center h-10 bg-bg-secondary border-b border-border select-none">
-      {/* 标签页区域 */}
-      <div id="tab-bar-area" className="flex-1 flex items-center h-full overflow-x-auto">
+      {/* 移动端：使用原生风顶部栏 + 实例切换抽屉（替代传统浏览器多标签滚动条）；桌面端：保持原有横向标签栏 */}
+      {isMobile ? (
+        dashboardView ? (
+          <div className="flex-1 flex items-center gap-2 px-3 h-full min-w-0">
+            <LayoutGrid className="w-4 h-4 text-accent flex-shrink-0" />
+            <span className="text-sm font-medium text-text-primary truncate">
+              {t('dashboard.title')}
+            </span>
+            <span className="px-1.5 py-0.5 text-[11px] bg-accent/10 text-accent rounded-full flex-shrink-0">
+              {instances.length}
+            </span>
+          </div>
+        ) : (
+          <div className="flex-1 flex items-center gap-1.5 px-2.5 h-full min-w-0">
+            {activeInstance && editingId === activeInstance.id ? (
+              <div
+                className="flex-1 flex items-center gap-1 min-w-0"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <input
+                  type="text"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  onBlur={handleSaveEdit}
+                  autoFocus
+                  className={clsx(
+                    'flex-1 min-w-0 px-2 py-1 text-sm rounded-md border border-accent',
+                    'bg-bg-primary text-text-primary',
+                    'focus:outline-none',
+                  )}
+                />
+                <button
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    handleSaveEdit();
+                  }}
+                  className="p-1 rounded-md hover:bg-success/10 text-success flex-shrink-0"
+                >
+                  <Check className="w-4 h-4" />
+                </button>
+                <button
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    handleCancelEdit();
+                  }}
+                  className="p-1 rounded-md hover:bg-error/10 text-error flex-shrink-0"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setShowInstanceSheet(true)}
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-bg-tertiary/90 active:bg-bg-hover border border-border/80 min-w-0 max-w-[220px] transition-colors"
+                  title={t('dashboard.title')}
+                >
+                  {activeInstance?.isRunning ? (
+                    <span className="w-2 h-2 rounded-full bg-accent task-running-indicator flex-shrink-0" />
+                  ) : (
+                    <span
+                      className={clsx(
+                        'w-2 h-2 rounded-full flex-shrink-0',
+                        isActiveConnected ? 'bg-success' : 'bg-text-muted/50',
+                      )}
+                    />
+                  )}
+                  <span className="text-sm font-medium text-text-primary truncate">
+                    {activeInstance?.name || 'MXU'}
+                  </span>
+                  {instances.length > 1 && (
+                    <span className="px-1.5 py-0.2 text-[10px] font-medium rounded-full bg-accent/12 text-accent flex-shrink-0">
+                      {activeInstanceIndex + 1}/{instances.length}
+                    </span>
+                  )}
+                  <ChevronDown className="w-3.5 h-3.5 text-text-secondary flex-shrink-0" />
+                </button>
+
+                {activeInstance && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      void handleTabContextMenu(e, activeInstance.id, activeInstance.name, {
+                        x: rect.left,
+                        y: rect.bottom + 4,
+                      });
+                    }}
+                    className="p-1.5 rounded-md text-text-secondary hover:bg-bg-hover hover:text-text-primary transition-colors flex-shrink-0"
+                    title={t('common.edit')}
+                  >
+                    <MoreHorizontal className="w-4 h-4" />
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+        )
+      ) : (
+        <div id="tab-bar-area" className="flex-1 flex items-center h-full overflow-x-auto">
         {instances.map((instance, index) => {
           const isAnimatingIn = animatingTabIds.includes(instance.id);
           const isClosing = closingTabIds.includes(instance.id);
@@ -395,14 +551,19 @@ export function TabBar() {
               onMouseDown={(e) => handleMouseDown(e, index)}
               onClick={() => !isClosing && setActiveInstance(instance.id)}
               onDoubleClick={(e) => handleDoubleClick(e, instance.id, instance.name)}
-              onContextMenu={(e) => handleTabContextMenu(e, instance.id, instance.name)}
+              onContextMenu={
+                isMobile ? undefined : (e) => handleTabContextMenu(e, instance.id, instance.name)
+              }
               onAnimationEnd={() => {
                 if (isAnimatingIn) {
                   removeAnimatingTabId(instance.id);
                 }
               }}
               className={clsx(
-                'group flex items-center gap-1 h-full px-2 cursor-pointer border-r border-border min-w-[120px] max-w-[200px]',
+                'group flex items-center gap-1 h-full px-2 cursor-pointer border-r border-border max-w-[180px] sm:max-w-[200px]',
+                editingId === instance.id
+                  ? 'min-w-[160px] sm:min-w-[160px]'
+                  : 'min-w-[96px] sm:min-w-[120px]',
                 instance.id === activeInstanceId
                   ? 'bg-bg-primary text-accent border-b-2 border-b-accent'
                   : 'bg-bg-tertiary text-text-secondary hover:bg-bg-hover border-b-2 border-b-transparent',
@@ -417,11 +578,11 @@ export function TabBar() {
                 !isAnimatingIn && !isClosing && 'transition-all',
               )}
             >
-              {/* 拖拽手柄 - 单标签时禁用 */}
+              {/* 拖拽手柄 - 单标签时禁用，移动端隐藏节省空间 */}
               {editingId !== instance.id && (
                 <div
                   className={clsx(
-                    'drag-handle p-0.5 transition-opacity',
+                    'hidden sm:block drag-handle p-0.5 transition-opacity',
                     instances.length > 1
                       ? 'cursor-grab opacity-0 group-hover:opacity-60 hover:!opacity-100'
                       : 'cursor-not-allowed opacity-30',
@@ -479,14 +640,36 @@ export function TabBar() {
                   <span className="flex-1 truncate text-sm" title={t('titleBar.renameInstance')}>
                     {instance.name}
                   </span>
+                  {instance.id === activeInstanceId && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        void handleTabContextMenu(e, instance.id, instance.name, {
+                          x: rect.left,
+                          y: rect.bottom + 4,
+                        });
+                      }}
+                      className="sm:hidden p-1 rounded text-text-muted hover:bg-bg-hover hover:text-text-primary transition-colors flex-shrink-0"
+                      title={t('common.edit')}
+                    >
+                      <MoreHorizontal className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                   {!isClosing && (
                     <button
                       onClick={(e) => handleCloseTab(e, instance.id)}
                       disabled={instances.length <= 1}
                       className={clsx(
-                        'p-0.5 rounded transition-all',
+                        'hidden sm:inline-flex p-0.5 rounded transition-all',
                         instances.length > 1
-                          ? 'opacity-0 group-hover:opacity-100 text-text-muted hover:bg-error/10 hover:text-error'
+                          ? clsx(
+                              'text-text-muted hover:bg-error/10 hover:text-error',
+                              instance.id === activeInstanceId
+                                ? 'opacity-100 sm:opacity-0 sm:group-hover:opacity-100'
+                                : 'opacity-0 group-hover:opacity-100',
+                            )
                           : 'opacity-30 cursor-not-allowed',
                       )}
                       title={instances.length > 1 ? t('titleBar.closeTab') : undefined}
@@ -509,6 +692,7 @@ export function TabBar() {
           <Plus className="w-4 h-4 text-text-secondary" />
         </button>
       </div>
+      )}
 
       {/* 项目名称（根据协议，label 是 UI 显示名称，title 是窗口标题；移动端隐藏节省空间） */}
       <div className="hidden md:block px-4 text-sm font-medium text-text-secondary">
@@ -572,13 +756,22 @@ export function TabBar() {
         <button
           onClick={toggleDashboardView}
           className={clsx(
-            'p-2 rounded-md transition-colors',
+            'hidden md:inline-flex p-2 rounded-md transition-colors',
             dashboardView ? 'bg-accent/10 text-accent' : 'hover:bg-bg-hover text-text-secondary',
           )}
           title={t('dashboard.toggle')}
         >
           <LayoutGrid className="w-4 h-4" />
         </button>
+        {!isTauri() && canInstall && !isStandalone && (
+          <button
+            onClick={handleInstallPwa}
+            className="p-2 rounded-md hover:bg-bg-hover text-text-secondary hover:text-accent transition-colors"
+            title="安装应用"
+          >
+            <Download className="w-4 h-4" />
+          </button>
+        )}
         <button
           onClick={toggleTheme}
           className="p-2 rounded-md hover:bg-bg-hover transition-colors"
@@ -594,7 +787,7 @@ export function TabBar() {
         </button>
         <button
           onClick={() => setCurrentPage('settings')}
-          className="p-2 rounded-md hover:bg-bg-hover transition-colors"
+          className="hidden md:inline-flex p-2 rounded-md hover:bg-bg-hover transition-colors"
           title={t('titleBar.settings')}
         >
           <Settings className="w-4 h-4 text-text-secondary" />
@@ -621,6 +814,229 @@ export function TabBar() {
             anchorRef={recentlyClosedButtonRef}
           />
         </Suspense>
+      )}
+
+      {/* 移动端：实例切换与管理抽屉 */}
+      {isMobile && (
+        <MobileSheet
+          open={showInstanceSheet}
+          onClose={() => {
+            setShowInstanceSheet(false);
+            if (editingId) {
+              handleCancelEdit();
+            }
+          }}
+          icon={<LayoutGrid className="w-4 h-4" />}
+          title={
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="text-base font-semibold text-text-primary truncate">
+                {t('dashboard.title')}
+              </span>
+              <span className="px-1.5 py-0.5 text-xs bg-accent/12 text-accent rounded-full">
+                {instances.length}
+              </span>
+            </div>
+          }
+          headerActions={
+            <button
+              type="button"
+              onClick={() => {
+                handleNewTab();
+              }}
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-accent/15 text-accent active:bg-accent/25 transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>{t('titleBar.newTab')}</span>
+            </button>
+          }
+        >
+          <div className="overflow-y-auto flex-1 min-h-0 p-3 space-y-2">
+            {instances.map((inst, idx) => {
+              const isSelected = inst.id === activeInstanceId;
+              const isInstConnected = instanceConnectionStatus[inst.id] === 'Connected';
+              const isEditingThis = editingId === inst.id;
+
+              return (
+                <div
+                  key={inst.id}
+                  onClick={() => {
+                    if (isEditingThis) return;
+                    setActiveInstance(inst.id);
+                    setShowInstanceSheet(false);
+                  }}
+                  className={clsx(
+                    'flex items-center justify-between gap-2 px-3.5 py-3 rounded-xl border transition-colors cursor-pointer',
+                    isSelected
+                      ? 'bg-accent/10 border-accent text-text-primary'
+                      : 'bg-bg-tertiary/60 border-border text-text-primary active:bg-bg-hover',
+                  )}
+                >
+                  {isEditingThis ? (
+                    <div
+                      className="flex-1 flex items-center gap-1.5 min-w-0"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <input
+                        type="text"
+                        value={editName}
+                        onChange={(e) => setEditName(e.target.value)}
+                        onKeyDown={handleKeyDown}
+                        onBlur={handleSaveEdit}
+                        autoFocus
+                        className="flex-1 min-w-0 px-2.5 py-1.5 text-base rounded-lg border border-accent bg-bg-primary text-text-primary focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          handleSaveEdit();
+                        }}
+                        className="p-1.5 rounded-lg bg-success/15 text-success"
+                      >
+                        <Check className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          handleCancelEdit();
+                        }}
+                        className="p-1.5 rounded-lg bg-error/15 text-error"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                        {inst.isRunning ? (
+                          <span className="w-2.5 h-2.5 rounded-full bg-accent task-running-indicator flex-shrink-0" />
+                        ) : (
+                          <span
+                            className={clsx(
+                              'w-2.5 h-2.5 rounded-full flex-shrink-0',
+                              isInstConnected ? 'bg-success' : 'bg-text-muted/50',
+                            )}
+                          />
+                        )}
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className={clsx(
+                                'text-base truncate',
+                                isSelected ? 'font-semibold text-accent' : 'font-medium',
+                              )}
+                            >
+                              {inst.name}
+                            </span>
+                            {inst.isRunning && (
+                              <span className="px-1.5 py-0.5 text-[10px] rounded bg-accent/15 text-accent font-medium flex-shrink-0">
+                                {t('dashboard.running')}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-xs text-text-muted truncate mt-0.5">
+                            {inst.selectedTasks.filter((task) => task.enabled || task.runOnce).length}/
+                            {inst.selectedTasks.length} {t('preset.taskCount')}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div
+                        className="flex items-center gap-0.5 shrink-0"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {instances.length > 1 && (
+                          <>
+                            <button
+                              type="button"
+                              disabled={idx === 0}
+                              onClick={() => reorderInstances(idx, idx - 1)}
+                              className={clsx(
+                                'p-1.5 rounded-lg transition-colors',
+                                idx === 0
+                                  ? 'text-text-muted/30 cursor-not-allowed'
+                                  : 'text-text-secondary hover:bg-bg-hover active:bg-bg-active',
+                              )}
+                              title={t('contextMenu.moveLeft')}
+                            >
+                              <ChevronUp className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              disabled={idx === instances.length - 1}
+                              onClick={() => reorderInstances(idx, idx + 1)}
+                              className={clsx(
+                                'p-1.5 rounded-lg transition-colors',
+                                idx === instances.length - 1
+                                  ? 'text-text-muted/30 cursor-not-allowed'
+                                  : 'text-text-secondary hover:bg-bg-hover active:bg-bg-active',
+                              )}
+                              title={t('contextMenu.moveRight')}
+                            >
+                              <ChevronDown className="w-4 h-4" />
+                            </button>
+                          </>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingId(inst.id);
+                            setEditName(inst.name);
+                          }}
+                          className="p-1.5 rounded-lg text-text-secondary hover:bg-bg-hover active:bg-bg-active transition-colors"
+                          title={t('contextMenu.renameTab')}
+                        >
+                          <Edit3 className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => duplicateInstance(inst.id)}
+                          className="p-1.5 rounded-lg text-text-secondary hover:bg-bg-hover active:bg-bg-active transition-colors"
+                          title={t('contextMenu.duplicateTab')}
+                        >
+                          <Copy className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={instances.length <= 1}
+                          onClick={(e) => handleCloseTab(e, inst.id)}
+                          className={clsx(
+                            'p-1.5 rounded-lg transition-colors',
+                            instances.length <= 1
+                              ? 'text-text-muted/30 cursor-not-allowed'
+                              : 'text-text-muted hover:text-error hover:bg-error/10 active:bg-error/15',
+                          )}
+                          title={t('contextMenu.closeTab')}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="p-3 pt-2 border-t border-border bg-bg-secondary shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                setShowInstanceSheet(false);
+                if (!dashboardView) {
+                  toggleDashboardView();
+                }
+              }}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium bg-bg-tertiary hover:bg-bg-hover active:bg-bg-active text-text-primary border border-border transition-colors"
+            >
+              <LayoutGrid className="w-4 h-4 text-accent" />
+              <span>{t('dashboard.toggle')}</span>
+            </button>
+          </div>
+        </MobileSheet>
       )}
 
       {/* 关闭标签确认弹窗 */}

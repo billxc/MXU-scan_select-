@@ -21,6 +21,8 @@ import { proxySettingsForUpdateDownload } from '@/services/proxyService';
 import { DownloadProgressBar, useOpenUpdateSettings } from './UpdateInfoCard';
 import clsx from 'clsx';
 import { loggers } from '@/utils/logger';
+import { useIsMobile } from '@/hooks/useIsMobile';
+import { MobileSheet } from './ui/MobileSheet';
 
 interface UpdatePanelProps {
   onClose: () => void;
@@ -29,6 +31,7 @@ interface UpdatePanelProps {
 
 export function UpdatePanel({ onClose, anchorRef }: UpdatePanelProps) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const panelRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState({ top: 0, right: 0 });
 
@@ -133,17 +136,19 @@ export function UpdatePanel({ onClose, anchorRef }: UpdatePanelProps) {
 
   // 计算面板位置
   useEffect(() => {
+    if (isMobile) return;
     if (anchorRef.current) {
       const rect = anchorRef.current.getBoundingClientRect();
       setPosition({
         top: rect.bottom + 8,
-        right: window.innerWidth - rect.right,
+        right: Math.max(8, window.innerWidth - rect.right),
       });
     }
-  }, [anchorRef]);
+  }, [anchorRef, isMobile]);
 
   // 点击外部关闭
   useEffect(() => {
+    if (isMobile) return;
     const handleClickOutside = (e: MouseEvent) => {
       if (
         panelRef.current &&
@@ -157,7 +162,7 @@ export function UpdatePanel({ onClose, anchorRef }: UpdatePanelProps) {
 
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [onClose, anchorRef]);
+  }, [onClose, anchorRef, isMobile]);
 
   // ESC 键关闭
   useEffect(() => {
@@ -212,6 +217,43 @@ export function UpdatePanel({ onClose, anchorRef }: UpdatePanelProps) {
 
   // 如果只有错误信息（没有更新），显示错误面板
   if (!updateInfo?.hasUpdate && updateInfo?.errorCode) {
+    const errContent = (
+      <div className="p-4 space-y-3">
+        <div
+          className={clsx(
+            'flex items-start gap-2 p-3 rounded-lg border',
+            isCdkError ? 'bg-warning/10 border-warning/30' : 'bg-error/10 border-error/30',
+          )}
+        >
+          <AlertCircle
+            className={clsx(
+              'w-4 h-4 mt-0.5 shrink-0',
+              isCdkError ? 'text-warning' : 'text-error',
+            )}
+          />
+          <div className="space-y-1 min-w-0">
+            <p className={clsx('text-sm', isCdkError ? 'text-warning' : 'text-error')}>
+              {errorText}
+            </p>
+            {isCdkError && <p className="text-xs text-text-muted">{t('mirrorChyan.cdkHint')}</p>}
+          </div>
+        </div>
+      </div>
+    );
+
+    if (isMobile) {
+      return (
+        <MobileSheet
+          open={true}
+          onClose={onClose}
+          title={t('mirrorChyan.checkFailed')}
+          icon={<AlertTriangle className="w-4 h-4 text-warning" />}
+        >
+          {errContent}
+        </MobileSheet>
+      );
+    }
+
     return (
       <div
         ref={panelRef}
@@ -235,28 +277,117 @@ export function UpdatePanel({ onClose, anchorRef }: UpdatePanelProps) {
         </div>
 
         {/* 错误信息 */}
-        <div className="p-4 space-y-3">
-          <div
-            className={clsx(
-              'flex items-start gap-2 p-3 rounded-lg border',
-              isCdkError ? 'bg-warning/10 border-warning/30' : 'bg-error/10 border-error/30',
-            )}
-          >
-            <AlertCircle
-              className={clsx(
-                'w-4 h-4 mt-0.5 shrink-0',
-                isCdkError ? 'text-warning' : 'text-error',
-              )}
-            />
-            <div className="space-y-1 min-w-0">
-              <p className={clsx('text-sm', isCdkError ? 'text-warning' : 'text-error')}>
-                {errorText}
-              </p>
-              {isCdkError && <p className="text-xs text-text-muted">{t('mirrorChyan.cdkHint')}</p>}
-            </div>
+        {errContent}
+      </div>
+    );
+  }
+
+  const updateBodyContent = (
+    <div className="p-4 space-y-4 overflow-y-auto">
+      {/* 更新日志 */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1 text-sm font-medium text-text-primary">
+            <ChevronRight className="w-3 h-3" />
+            <span>{t('mirrorChyan.releaseNotes')}</span>
           </div>
+          {updateInfo.releaseNote && (
+            <button
+              onClick={handleOpenModal}
+              className="flex items-center gap-1 px-2 py-1 text-xs text-accent hover:bg-accent/10 rounded-md transition-colors"
+              title={t('mirrorChyan.viewDetails')}
+            >
+              <Maximize2 className="w-3 h-3" />
+              <span>{t('mirrorChyan.viewDetails')}</span>
+            </button>
+          )}
+        </div>
+        <div className="max-h-32 overflow-y-auto bg-bg-tertiary rounded-lg p-3 border border-border">
+          {updateInfo.releaseNote ? (
+            <div
+              className="text-xs text-text-secondary prose prose-sm max-w-none leading-relaxed"
+              dangerouslySetInnerHTML={{ __html: simpleMarkdownToHtml(updateInfo.releaseNote) }}
+            />
+          ) : (
+            <p className="text-xs text-text-muted italic">{t('mirrorChyan.noReleaseNotes')}</p>
+          )}
         </div>
       </div>
+
+      {/* 下载状态 */}
+      <div className="space-y-2 pt-2 border-t border-border">
+        {/* API 错误提示（如 CDK 问题导致无法获取下载链接） */}
+        {updateInfo.errorCode && errorText && (
+          <div
+            className={clsx(
+              'flex items-start gap-2 p-2 rounded-lg text-xs',
+              isCdkError ? 'bg-warning/10 text-warning' : 'bg-error/10 text-error',
+            )}
+          >
+            <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+            <span>{errorText}</span>
+          </div>
+        )}
+
+        {/* 没有下载链接的提示（仅当没有 API 错误时显示通用提示） */}
+        {!updateInfo.downloadUrl && !updateInfo.errorCode && (
+          <div className="flex items-center gap-2 text-xs text-text-muted">
+            <AlertCircle className="w-3.5 h-3.5 text-warning" />
+            <span>{t('mirrorChyan.noDownloadUrl')}</span>
+          </div>
+        )}
+
+        {/* 下载进度 */}
+        {updateInfo.downloadUrl && downloadStatus !== 'idle' && (
+          <DownloadProgressBar
+            downloadStatus={downloadStatus}
+            downloadProgress={downloadProgress}
+            fileSize={updateInfo.fileSize}
+            downloadSource={updateInfo.downloadSource}
+            onInstallClick={handleInstallNow}
+            onRetryClick={() => {
+              resetDownloadState();
+              startDownload();
+            }}
+            onSlowDownloadHintClick={handleOpenUpdateSettings}
+          />
+        )}
+
+        {/* 等待下载（有链接但未开始） */}
+        {updateInfo.downloadUrl && downloadStatus === 'idle' && (
+          <div className="flex items-center gap-2 text-xs text-text-muted">
+            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+            <span>{t('mirrorChyan.preparingDownload')}</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  if (isMobile) {
+    return (
+      <MobileSheet
+        open={true}
+        onClose={onClose}
+        icon={<Download className="w-4 h-4" />}
+        title={
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-base font-semibold text-text-primary truncate">
+              {t('mirrorChyan.newVersion')}
+            </span>
+            <span className="font-mono text-sm text-accent font-semibold">
+              {updateInfo.versionName}
+            </span>
+            {updateInfo.channel && updateInfo.channel !== 'stable' && (
+              <span className="px-1.5 py-0.5 bg-warning/20 text-warning text-xs rounded font-medium">
+                {updateInfo.channel}
+              </span>
+            )}
+          </div>
+        }
+      >
+        {updateBodyContent}
+      </MobileSheet>
     );
   }
 
@@ -292,85 +423,7 @@ export function UpdatePanel({ onClose, anchorRef }: UpdatePanelProps) {
       </div>
 
       {/* 内容区 */}
-      <div className="p-4 space-y-4">
-        {/* 更新日志 */}
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1 text-sm font-medium text-text-primary">
-              <ChevronRight className="w-3 h-3" />
-              <span>{t('mirrorChyan.releaseNotes')}</span>
-            </div>
-            {updateInfo.releaseNote && (
-              <button
-                onClick={handleOpenModal}
-                className="flex items-center gap-1 px-2 py-1 text-xs text-accent hover:bg-accent/10 rounded-md transition-colors"
-                title={t('mirrorChyan.viewDetails')}
-              >
-                <Maximize2 className="w-3 h-3" />
-                <span>{t('mirrorChyan.viewDetails')}</span>
-              </button>
-            )}
-          </div>
-          <div className="max-h-32 overflow-y-auto bg-bg-tertiary rounded-lg p-3 border border-border">
-            {updateInfo.releaseNote ? (
-              <div
-                className="text-xs text-text-secondary prose prose-sm max-w-none leading-relaxed"
-                dangerouslySetInnerHTML={{ __html: simpleMarkdownToHtml(updateInfo.releaseNote) }}
-              />
-            ) : (
-              <p className="text-xs text-text-muted italic">{t('mirrorChyan.noReleaseNotes')}</p>
-            )}
-          </div>
-        </div>
-
-        {/* 下载状态 */}
-        <div className="space-y-2 pt-2 border-t border-border">
-          {/* API 错误提示（如 CDK 问题导致无法获取下载链接） */}
-          {updateInfo.errorCode && errorText && (
-            <div
-              className={clsx(
-                'flex items-start gap-2 p-2 rounded-lg text-xs',
-                isCdkError ? 'bg-warning/10 text-warning' : 'bg-error/10 text-error',
-              )}
-            >
-              <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-              <span>{errorText}</span>
-            </div>
-          )}
-
-          {/* 没有下载链接的提示（仅当没有 API 错误时显示通用提示） */}
-          {!updateInfo.downloadUrl && !updateInfo.errorCode && (
-            <div className="flex items-center gap-2 text-xs text-text-muted">
-              <AlertCircle className="w-3.5 h-3.5 text-warning" />
-              <span>{t('mirrorChyan.noDownloadUrl')}</span>
-            </div>
-          )}
-
-          {/* 下载进度 */}
-          {updateInfo.downloadUrl && downloadStatus !== 'idle' && (
-            <DownloadProgressBar
-              downloadStatus={downloadStatus}
-              downloadProgress={downloadProgress}
-              fileSize={updateInfo.fileSize}
-              downloadSource={updateInfo.downloadSource}
-              onInstallClick={handleInstallNow}
-              onRetryClick={() => {
-                resetDownloadState();
-                startDownload();
-              }}
-              onSlowDownloadHintClick={handleOpenUpdateSettings}
-            />
-          )}
-
-          {/* 等待下载（有链接但未开始） */}
-          {updateInfo.downloadUrl && downloadStatus === 'idle' && (
-            <div className="flex items-center gap-2 text-xs text-text-muted">
-              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-              <span>{t('mirrorChyan.preparingDownload')}</span>
-            </div>
-          )}
-        </div>
-      </div>
+      {updateBodyContent}
     </div>
   );
 }

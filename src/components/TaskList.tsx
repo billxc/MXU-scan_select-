@@ -355,6 +355,15 @@ export function TaskList() {
   // 任务列表区域右键菜单
   const handleListContextMenu = useCallback(
     async (e: React.MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target?.tagName === 'INPUT' ||
+        target?.tagName === 'TEXTAREA' ||
+        target?.isContentEditable ||
+        target?.closest('input, textarea, [contenteditable="true"]')
+      ) {
+        return;
+      }
       e.preventDefault();
       e.stopPropagation();
       if (!instance) return;

@@ -25,6 +25,8 @@ import {
   Check,
   ChevronRight,
   RefreshCw,
+  Search,
+  X,
 } from 'lucide-react';
 import { getInterfaceLangKey } from '@/i18n';
 import { findSwitchCase } from '@/utils/optionHelpers';
@@ -36,6 +38,8 @@ import { Tooltip } from './ui/Tooltip';
 import { DescriptionHtml } from './ui/DescriptionHtml';
 import { rescanScanSelectOption } from '@/services/interfaceLoader';
 import { loggers } from '@/utils/logger';
+import { useIsMobile } from '@/hooks/useIsMobile';
+import { MobileSheet } from './ui/MobileSheet';
 
 /** 判断 switch 类型的选项是否有子选项 */
 export function switchHasNestedOptions(optionDef: OptionDefinition): boolean {
@@ -319,8 +323,8 @@ function InputField({
 
   return (
     <div className="space-y-1">
-      <div className="flex flex-wrap items-center gap-3 min-w-0">
-        <div className="flex items-center gap-1.5 min-w-0 flex-1 basis-[14rem]">
+      <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-1.5 sm:gap-3 min-w-0">
+        <div className="flex items-center gap-1.5 min-w-0 sm:flex-1 sm:basis-[14rem]">
           {input.icon && (
             <AsyncIcon
               icon={input.icon}
@@ -341,7 +345,7 @@ function InputField({
             onChange={onChange}
             placeholder={inputPlaceholder}
             disabled={disabled}
-            className="min-w-[min(12rem,100%)] flex-1 basis-[30%]"
+            className="w-full sm:min-w-[min(12rem,100%)] sm:flex-1 sm:basis-[30%] py-2.5 sm:py-1.5 text-base sm:text-sm"
           />
         ) : input.input_type === 'file' ? (
           <FileInput
@@ -355,14 +359,14 @@ function InputField({
               name: resolveI18nText(filter.name, langKey) || filter.name,
             }))}
             disabled={disabled}
-            className="min-w-[min(12rem,100%)] flex-1 basis-[30%]"
+            className="w-full sm:min-w-[min(12rem,100%)] sm:flex-1 sm:basis-[30%]"
           />
         ) : input.input_type === 'time' ? (
           <TimeInput
             value={value}
             onChange={onChange}
             disabled={disabled}
-            className="min-w-[min(12rem,100%)] flex-1 basis-[30%]"
+            className="w-full sm:min-w-[min(12rem,100%)] sm:flex-1 sm:basis-[30%] py-2.5 sm:py-1.5 text-base sm:text-sm"
           />
         ) : (
           <TextInput
@@ -371,7 +375,7 @@ function InputField({
             placeholder={inputPlaceholder}
             disabled={disabled}
             hasError={!!validationError}
-            className="min-w-[min(12rem,100%)] flex-1 basis-[30%]"
+            className="w-full sm:min-w-[min(12rem,100%)] sm:flex-1 sm:basis-[30%] py-2.5 sm:py-1.5 text-base sm:text-sm"
             type={input.password ? 'password' : input.pipeline_type === 'int' ? 'number' : 'text'}
             inputMode={input.pipeline_type === 'int' ? 'numeric' : undefined}
             step={input.pipeline_type === 'int' ? 1 : undefined}
@@ -536,10 +540,15 @@ export function OptionEditor({
     };
 
     return (
-      <div className={clsx('space-y-3', depth > 0 && 'ml-4 pl-3 border-l-2 border-border')}>
+      <div
+        className={clsx(
+          'space-y-3',
+          depth > 0 && 'ml-2 pl-2.5 sm:ml-4 sm:pl-3 border-l-2 border-border',
+        )}
+      >
         <div
           className={clsx(
-            'flex items-center justify-between gap-3 rounded-md px-2 py-1.5 -mx-2 transition-colors',
+            'flex items-center justify-between gap-3 rounded-md px-2 py-2.5 sm:py-1.5 -mx-2 transition-colors',
             !effectiveDisabled && 'cursor-pointer hover:bg-bg-hover',
             effectiveDisabled && 'cursor-not-allowed',
             isOptionIncompatible && 'opacity-60',
@@ -554,7 +563,7 @@ export function OptionEditor({
           aria-checked={isChecked}
           aria-disabled={effectiveDisabled}
         >
-          <div className="min-w-0 flex-1 max-w-[60%]">
+          <div className="min-w-0 flex-1 max-w-[78%] sm:max-w-[60%]">
             <OptionLabelWithIncompatible
               label={optionLabel}
               icon={optionDef.icon}
@@ -635,7 +644,7 @@ export function OptionEditor({
       <div
         className={clsx(
           'space-y-3',
-          depth > 0 && 'ml-4 pl-3 border-l-2 border-border',
+          depth > 0 && 'ml-2 pl-2.5 sm:ml-4 sm:pl-3 border-l-2 border-border',
           isOptionIncompatible && 'opacity-60',
         )}
       >
@@ -650,7 +659,7 @@ export function OptionEditor({
           basePath={basePath}
           translations={translations}
         />
-        <div className="grid grid-cols-4 gap-1">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-1">
           {optionDef.cases.map((caseItem) => {
             const caseLabel = isMxuOption
               ? t(caseItem.label || caseItem.name)
@@ -673,7 +682,7 @@ export function OptionEditor({
                 }}
                 disabled={isCaseDisabled}
                 className={clsx(
-                  'px-2 py-1.5 text-xs rounded border transition-colors min-w-0',
+                  'px-3 py-2.5 text-sm sm:px-2 sm:py-1.5 sm:text-xs rounded border transition-colors min-w-0',
                   isChecked
                     ? 'bg-accent text-white border-accent'
                     : 'bg-bg-primary text-text-secondary border-border hover:border-accent hover:text-accent',
@@ -737,11 +746,11 @@ export function OptionEditor({
       <div
         className={clsx(
           'space-y-3',
-          depth > 0 && 'ml-4 pl-3 border-l-2 border-border',
+          depth > 0 && 'ml-2 pl-2.5 sm:ml-4 sm:pl-3 border-l-2 border-border',
           isOptionIncompatible && 'opacity-60',
         )}
       >
-        <div className="max-w-[60%]">
+        <div className="w-full sm:max-w-[60%]">
           <OptionLabelWithIncompatible
             label={optionLabel}
             icon={optionDef.icon}
@@ -816,72 +825,92 @@ export function OptionEditor({
     <div
       className={clsx(
         'space-y-3',
-        depth > 0 && 'ml-4 pl-3 border-l-2 border-border',
+        depth > 0 && 'ml-2 pl-2.5 sm:ml-4 sm:pl-3 border-l-2 border-border',
         isOptionIncompatible && 'opacity-60',
       )}
     >
-      <div className="flex items-center gap-3">
-        <div className="min-w-0 flex-1 max-w-[60%]">
-          <OptionLabelWithIncompatible
-            label={optionLabel}
-            icon={optionDef.icon}
-            basePath={basePath}
-            incompatibleReason={incompatibleReason}
-          />
-          <OptionDescription
-            description={optionDescription}
-            basePath={basePath}
-            translations={translations}
-          />
+      <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
+        <div className="flex items-start justify-between gap-2 min-w-0 w-full sm:flex-1 sm:max-w-[60%]">
+          <div className="min-w-0 flex-1">
+            <OptionLabelWithIncompatible
+              label={optionLabel}
+              icon={optionDef.icon}
+              basePath={basePath}
+              incompatibleReason={incompatibleReason}
+            />
+            <OptionDescription
+              description={optionDescription}
+              basePath={basePath}
+              translations={translations}
+            />
+          </div>
+          {nestedOptionKeys.length > 0 && (
+            <div className="sm:hidden">
+              <OptionCollapseArrow
+                collapsed={isCollapsed}
+                onToggle={handleToggleCollapsed}
+                disabled={effectiveDisabled}
+              />
+            </div>
+          )}
         </div>
         {nestedOptionKeys.length > 0 && (
-          <OptionCollapseArrow
-            collapsed={isCollapsed}
-            onToggle={handleToggleCollapsed}
+          <div className="hidden sm:flex ml-auto">
+            <OptionCollapseArrow
+              collapsed={isCollapsed}
+              onToggle={handleToggleCollapsed}
+              disabled={effectiveDisabled}
+            />
+          </div>
+        )}
+        <div
+          className={clsx(
+            'flex items-center gap-2 w-full sm:w-[30%] sm:flex-shrink-0',
+            nestedOptionKeys.length === 0 && 'sm:ml-auto',
+          )}
+        >
+          <SelectComponent
+            className="flex-1 min-w-0"
+            title={optionLabel}
+            value={selectedCaseName}
             disabled={effectiveDisabled}
+            basePath={basePath}
+            options={optionDef.cases.map((caseItem) => {
+              const label = isMxuOption
+                ? t(caseItem.label || caseItem.name)
+                : resolveI18nText(caseItem.label, langKey) || caseItem.name;
+              return {
+                value: caseItem.name,
+                label,
+                icon: caseItem.icon,
+              };
+            })}
+            onChange={(next) => {
+              if (effectiveDisabled) return;
+              commitOptionValue({
+                type: 'select',
+                caseName: next,
+              });
+            }}
           />
-        )}
-        <SelectComponent
-          // 有子选项时由箭头承担 ml-auto 贴右；无子选项时下拉框自身贴右
-          className={clsx('w-[30%] flex-shrink-0', nestedOptionKeys.length === 0 && 'ml-auto')}
-          value={selectedCaseName}
-          disabled={effectiveDisabled}
-          basePath={basePath}
-          options={optionDef.cases.map((caseItem) => {
-            const label = isMxuOption
-              ? t(caseItem.label || caseItem.name)
-              : resolveI18nText(caseItem.label, langKey) || caseItem.name;
-            return {
-              value: caseItem.name,
-              label,
-              icon: caseItem.icon,
-            };
-          })}
-          onChange={(next) => {
-            if (effectiveDisabled) return;
-            commitOptionValue({
-              type: 'select',
-              caseName: next,
-            });
-          }}
-        />
-        {/* scan_select 类型的刷新按钮 */}
-        {isScanSelect && (
-          <Tooltip content={t('common.refresh') || '刷新'}>
-            <button
-              className={clsx(
-                'p-1.5 rounded-md transition-colors',
-                'hover:bg-bg-hover',
-                'disabled:opacity-50 disabled:cursor-not-allowed',
-                isRefreshing && 'animate-spin',
-              )}
-              disabled={effectiveDisabled || isRefreshing}
-              onClick={handleRefresh}
-            >
-              <RefreshCw size={16} />
-            </button>
-          </Tooltip>
-        )}
+          {/* scan_select 类型的刷新按钮 */}
+          {isScanSelect && (
+            <Tooltip content={t('common.refresh') || '刷新'}>
+              <button
+                className={clsx(
+                  'p-2.5 sm:p-1.5 rounded-md border border-border sm:border-transparent bg-bg-secondary sm:bg-transparent transition-colors shrink-0',
+                  'hover:bg-bg-hover',
+                  'disabled:opacity-50 disabled:cursor-not-allowed',
+                  isRefreshing && 'animate-spin',
+                )}
+                disabled={effectiveDisabled || isRefreshing}
+                onClick={handleRefresh}
+              >
+                <RefreshCw size={16} />
+              </button>
+            </Tooltip>
+          )}
+        </div>
       </div>
       {/* scan_select：选项下方显示当前选中项的图片（扫描结果为图片时） */}
       {isScanSelect && selectedCase?.icon && (
@@ -1058,8 +1087,127 @@ interface OptionSelectDropdownProps {
   options: { value: string; label: string; icon?: string }[];
   disabled?: boolean;
   className?: string;
+  title?: string;
   basePath: string;
   onChange: (value: string) => void;
+}
+
+/** 移动端原生级 Bottom Sheet 选择器（支持普通单选与可搜索单选，不受视口滚动与软键盘影响） */
+function MobileSelectSheet({
+  open,
+  title,
+  value,
+  options,
+  searchable = false,
+  basePath,
+  onSelect,
+  onClose,
+}: {
+  open: boolean;
+  title?: string;
+  value: string;
+  options: { value: string; label: string; icon?: string }[];
+  searchable?: boolean;
+  basePath: string;
+  onSelect: (value: string) => void;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const [searchQuery, setSearchQuery] = useState('');
+
+  useEffect(() => {
+    if (open) {
+      setSearchQuery('');
+    }
+  }, [open]);
+
+  const filteredOptions = useMemo(() => {
+    if (!searchable || !searchQuery.trim()) return options;
+    const query = searchQuery.toLowerCase();
+    return options.filter(
+      (opt) =>
+        stripInlineRichText(opt.label).toLowerCase().includes(query) ||
+        opt.value.toLowerCase().includes(query),
+    );
+  }, [options, searchQuery, searchable]);
+
+  if (!open) return null;
+
+  return (
+    <MobileSheet
+      open={open}
+      onClose={onClose}
+      title={title ? stripInlineRichText(title) : t('common.edit')}
+      maxHeightClassName="max-h-[82dvh]"
+      zIndexClassName="z-[10050]"
+    >
+      {/* 搜索框（大于 4 项时启用，字号 text-base 避免 iOS 缩放，且不自动强弹软键盘避免遮挡） */}
+      {(searchable || options.length > 6) && (
+        <div className="px-4 py-2.5 shrink-0 border-b border-border">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder={t('optionEditor.searchPlaceholder')}
+              className="w-full pl-9 pr-8 py-2.5 text-base rounded-xl border border-border bg-bg-tertiary text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-text-muted hover:text-text-primary"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 选项列表 */}
+      <div className="overflow-y-auto flex-1 min-h-0 divide-y divide-border/40 px-2 py-1">
+        {filteredOptions.length === 0 ? (
+          <div className="py-8 text-sm text-text-muted text-center">
+            {t('optionEditor.noMatchingOptions')}
+          </div>
+        ) : (
+          filteredOptions.map((opt) => {
+            const isSelected = opt.value === value;
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => {
+                  onSelect(opt.value);
+                  onClose();
+                }}
+                className={clsx(
+                  'w-full px-3.5 py-3 text-left text-base rounded-xl flex items-center justify-between gap-3 transition-colors',
+                  isSelected
+                    ? 'bg-accent/12 text-accent font-medium'
+                    : 'text-text-primary active:bg-bg-hover',
+                )}
+              >
+                <span className="flex items-center gap-2.5 min-w-0 flex-1">
+                  {opt.icon && (
+                    <AsyncIcon
+                      icon={opt.icon}
+                      basePath={basePath}
+                      className="w-5 h-5 object-contain flex-shrink-0"
+                    />
+                  )}
+                  <RichLabel text={opt.label} className="break-words" />
+                </span>
+                {isSelected && <Check className="w-5 h-5 text-accent flex-shrink-0" />}
+              </button>
+            );
+          })
+        )}
+      </div>
+    </MobileSheet>
+  );
 }
 
 function OptionSelectDropdown({
@@ -1067,9 +1215,11 @@ function OptionSelectDropdown({
   options,
   disabled = false,
   className,
+  title,
   basePath,
   onChange,
 }: OptionSelectDropdownProps) {
+  const isMobile = useIsMobile();
   const triggerId = useId();
   const listboxId = useId();
   const [open, setOpen] = useState(false);
@@ -1095,16 +1245,16 @@ function OptionSelectDropdown({
   }, []);
 
   const dropdownPos = useDropdownPosition({
-    open,
+    open: open && !isMobile,
     triggerRef,
     menuRef: listboxRef,
     onClose: closeDropdown,
     minWidth: 220,
   });
 
-  // 打开时初始化活动项并将焦点移动到列表
+  // 打开时初始化活动项并将焦点移动到列表（仅桌面端）
   useEffect(() => {
-    if (open && !disabled) {
+    if (open && !disabled && !isMobile) {
       const index = Math.max(
         0,
         options.findIndex((opt) => opt.value === value),
@@ -1114,7 +1264,7 @@ function OptionSelectDropdown({
         listboxRef.current?.focus();
       }, 0);
     }
-  }, [open, disabled, options, value]);
+  }, [open, disabled, isMobile, options, value]);
 
   // 滚动活动项到视图中
   useEffect(() => {
@@ -1184,7 +1334,7 @@ function OptionSelectDropdown({
         ref={triggerRef}
         disabled={isDisabled}
         className={clsx(
-          'w-full px-3 py-1.5 text-sm rounded-md border flex items-center justify-between gap-2',
+          'w-full px-3 py-2.5 sm:py-1.5 text-sm rounded-md border flex items-center justify-between gap-2',
           'bg-bg-secondary text-text-primary border-border',
           'focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/20',
           isDisabled
@@ -1216,7 +1366,19 @@ function OptionSelectDropdown({
         />
       </button>
 
-      {open &&
+      {isMobile ? (
+        <MobileSelectSheet
+          open={open && !isDisabled}
+          title={title}
+          value={value}
+          options={options}
+          searchable={false}
+          basePath={basePath}
+          onSelect={onChange}
+          onClose={closeDropdown}
+        />
+      ) : (
+        open &&
         !isDisabled &&
         dropdownPos &&
         createPortal(
@@ -1279,7 +1441,8 @@ function OptionSelectDropdown({
             })}
           </div>,
           document.body,
-        )}
+        )
+      )}
     </div>
   );
 }
@@ -1290,10 +1453,12 @@ function OptionSelectComboBox({
   options,
   disabled = false,
   className,
+  title,
   basePath,
   onChange,
 }: OptionSelectDropdownProps) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const triggerId = useId();
   const listboxId = useId();
   const [open, setOpen] = useState(false);
@@ -1331,7 +1496,7 @@ function OptionSelectComboBox({
   }, []);
 
   const dropdownPos = useDropdownPosition({
-    open,
+    open: open && !isMobile,
     triggerRef,
     menuRef,
     onClose: closeDropdown,
@@ -1349,15 +1514,15 @@ function OptionSelectComboBox({
     setOpen(true);
   };
 
-  // 搜索初始化在打开动作中进行，避免父组件重渲染时清空输入。
+  // 搜索初始化在打开动作中进行（仅桌面端自动聚焦，防止移动端弹软键盘）
   useEffect(() => {
-    if (open && !disabled) {
+    if (open && !disabled && !isMobile) {
       const timeout = setTimeout(() => {
         inputRef.current?.focus();
       }, 0);
       return () => clearTimeout(timeout);
     }
-  }, [open, disabled]);
+  }, [open, disabled, isMobile]);
 
   // 当过滤结果变化时，重置活动索引
   useEffect(() => {
@@ -1438,7 +1603,7 @@ function OptionSelectComboBox({
         ref={triggerRef}
         disabled={isDisabled}
         className={clsx(
-          'w-full px-3 py-1.5 text-sm rounded-md border flex items-center justify-between gap-2',
+          'w-full px-3 py-2.5 sm:py-1.5 text-sm rounded-md border flex items-center justify-between gap-2',
           'bg-bg-secondary text-text-primary border-border',
           'focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/20',
           isDisabled
@@ -1471,7 +1636,19 @@ function OptionSelectComboBox({
         />
       </button>
 
-      {open &&
+      {isMobile ? (
+        <MobileSelectSheet
+          open={open && !isDisabled}
+          title={title}
+          value={value}
+          options={options}
+          searchable={true}
+          basePath={basePath}
+          onSelect={onChange}
+          onClose={closeDropdown}
+        />
+      ) : (
+        open &&
         !isDisabled &&
         dropdownPos &&
         createPortal(
@@ -1562,7 +1739,8 @@ function OptionSelectComboBox({
             </div>
           </div>,
           document.body,
-        )}
+        )
+      )}
     </div>
   );
 }
@@ -1598,7 +1776,7 @@ export function SwitchGrid({ instanceId, taskId, items, disabled = false }: Swit
   };
 
   return (
-    <div className="grid grid-cols-4 gap-1">
+    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-1">
       {items.map((item) => {
         const itemDisabled = disabled || !!item.controllerIncompatible;
         const tooltipContent = item.controllerIncompatible
@@ -1613,7 +1791,7 @@ export function SwitchGrid({ instanceId, taskId, items, disabled = false }: Swit
               onClick={() => handleToggle(item.optionKey, item.isChecked, itemDisabled)}
               disabled={itemDisabled}
               className={clsx(
-                'px-2 py-1.5 text-xs rounded border transition-colors truncate',
+                'px-3 py-2.5 text-sm sm:px-2 sm:py-1.5 sm:text-xs rounded border transition-colors truncate',
                 item.isChecked
                   ? 'bg-accent text-white border-accent'
                   : 'bg-bg-primary text-text-secondary border-border hover:border-accent hover:text-accent',

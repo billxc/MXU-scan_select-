@@ -229,8 +229,7 @@ export function LogsPanel() {
       id="logs-panel"
       className={clsx(
         'flex flex-col bg-bg-secondary rounded-lg ring-1 ring-inset ring-border overflow-hidden',
-        // 2.5rem = TabBar h-10；若 TabBar 高度变更需同步更新
-        isMobile ? 'h-[calc(100dvh-2.5rem)]' : 'flex-1 min-h-50',
+        'flex-1 min-h-0 sm:min-h-50 h-full',
       )}
     >
       {/* 标题栏（桌面端可点击展开/折叠上方面板，移动端仅显示标题） */}
@@ -256,6 +255,22 @@ export function LogsPanel() {
       >
         <span className="text-sm font-medium text-text-primary">{t('logs.title')}</span>
         <div className="flex items-center gap-1.5">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              handleCopyAll();
+            }}
+            disabled={logs.length === 0}
+            className={clsx(
+              'p-1 rounded-md transition-colors',
+              logs.length === 0
+                ? 'text-text-muted cursor-not-allowed'
+                : 'text-text-secondary hover:bg-bg-tertiary hover:text-text-primary',
+            )}
+            title={t('logs.copyAll')}
+          >
+            <Copy className="w-3.5 h-3.5" />
+          </button>
           <button
             onClick={(e) => {
               e.stopPropagation();
