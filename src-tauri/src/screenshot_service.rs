@@ -18,12 +18,26 @@ use std::sync::{
 };
 use std::time::Instant;
 
-use crate::commands::types::MaaState;
+use crate::commands::types::{ControllerConfig, MaaState};
 
 /// 订阅者超时时长：超过此时间无任何活动的订阅者将被自动清理。
 const SUBSCRIBER_TIMEOUT_SECS: u64 = 30;
 /// 截图最小间隔（ms），防止后端被过度请求。
 const MIN_INTERVAL_MS: u64 = 100;
+/// MuMu 共享内存截图最小间隔（ms），约 30 FPS 实时流。
+const MUMU_MIN_INTERVAL_MS: u64 = 33;
+
+fn is_mumu_controller(config: Option<&ControllerConfig>) -> bool {
+    if let Some(ControllerConfig::Adb { config, .. }) = config {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(config) {
+            return value
+                .pointer("/extras/mumu/enable")
+                .and_then(|v| v.as_bool())
+                == Some(true);
+        }
+    }
+    false
+}
 
 // ============================================================================
 // 数据结构
@@ -83,7 +97,7 @@ impl ScreenshotService {
             subs.insert(
                 subscriber_id,
                 ScreenshotSubscriber {
-                    interval_ms: interval_ms.max(MIN_INTERVAL_MS),
+                    interval_ms: interval_ms.max(MUMU_MIN_INTERVAL_MS),
                     last_active: Instant::now(),
                 },
             );
@@ -104,6 +118,14 @@ impl ScreenshotService {
         let streams = self.streams.lock().unwrap();
         if let Some(stream) = streams.get(instance_id) {
             stream.subscribers.lock().unwrap().remove(subscriber_id);
+        }
+    }
+
+    /// 停止指定实例的所有截图订阅（用于模拟器关机前或实例断开前立即停止截图循环）。
+    pub fn stop_instance(&self, instance_id: &str) {
+        let streams = self.streams.lock().unwrap();
+        if let Some(stream) = streams.get(instance_id) {
+            stream.subscribers.lock().unwrap().clear();
         }
     }
 
@@ -138,9 +160,9 @@ fn capture_loop(
         log::debug!("[screenshot] capture_loop started: {}", instance_id);
 
         loop {
-            // 1. 清理超时订阅者，计算当前最小间隔
+            // 1. 清理超时订阅者，计算当前订阅者请求的最快间隔
             //    MutexGuard 在块末尾 drop，不跨越 .await
-            let min_interval_ms: u64 = {
+            let requested_interval_ms: u64 = {
                 let mut subs = stream.subscribers.lock().unwrap();
                 let now = Instant::now();
                 subs.retain(|_, sub| {
@@ -153,52 +175,79 @@ fn capture_loop(
                     .map(|s| s.interval_ms)
                     .min()
                     .unwrap_or(1000)
-                    .max(MIN_INTERVAL_MS)
             };
 
-            // 2. 检查实例状态，获取截图决策（仅用 bool 传递，不持有 Controller）
+            // 2. 检查实例状态，获取截图决策（仅用标量传递，不持有 Controller）
             //    MutexGuard 在块末尾 drop，不跨越 .await
-            let (should_exit, should_screencap): (bool, bool) = {
+            let (should_exit, should_screencap, is_mumu): (bool, bool, bool) = {
                 match maa_state.instances.lock() {
-                    Err(_) => (true, false),
+                    Err(_) => (true, false, false),
                     Ok(instances) => match instances.get(&instance_id) {
                         None => {
                             log::debug!(
                                 "[screenshot] instance {} destroyed, stopping",
                                 instance_id
                             );
-                            (true, false)
+                            (true, false, false)
                         }
-                        Some(inst) => {
-                            if inst.controller.is_none() {
+                        Some(inst) => match inst.controller.as_ref() {
+                            None => {
                                 log::debug!(
                                     "[screenshot] controller not connected for {}, stopping",
                                     instance_id
                                 );
-                                (true, false)
-                            } else {
-                                let is_running = inst.tasker.as_ref().is_some_and(|t| t.running());
-                                // 任务运行中，管线自动更新缓存，跳过主动截图
-                                (false, !is_running)
+                                (true, false, false)
                             }
-                        }
+                            Some(ctrl) if !ctrl.connected() => {
+                                log::debug!(
+                                    "[screenshot] controller disconnected for {}, stopping",
+                                    instance_id
+                                );
+                                (true, false, false)
+                            }
+                            Some(_) => {
+                                let is_mumu = is_mumu_controller(inst.controller_config.as_ref());
+                                let is_running = inst.tasker.as_ref().is_some_and(|t| t.running());
+                                // MuMu 使用共享内存 IPC 截图（~1ms），即使任务运行中也持续刷新以保持宝具/技能动画实时播放；
+                                // 非 MuMu 设备在任务运行中由管线更新缓存，跳过主动截图。
+                                (false, is_mumu || !is_running, is_mumu)
+                            }
+                        },
                     },
                 }
             };
 
             if should_exit {
+                stream.subscribers.lock().unwrap().clear();
                 break;
             }
+
+            let min_interval_ms = if is_mumu {
+                requested_interval_ms.max(MUMU_MIN_INTERVAL_MS)
+            } else {
+                requested_interval_ms.max(MIN_INTERVAL_MS)
+            };
 
             // 3. 需要截图时，重新加锁获取 Controller 引用并调用 post_screencap
             //    MutexGuard 及 Controller 引用均在块末尾 drop，不跨越 .await
             if should_screencap {
+                let mut post_failed = false;
                 if let Ok(instances) = maa_state.instances.lock() {
                     if let Some(inst) = instances.get(&instance_id) {
                         if let Some(ctrl) = inst.controller.as_ref() {
-                            let _ = ctrl.post_screencap();
+                            if !ctrl.connected() || ctrl.post_screencap().is_err() {
+                                post_failed = true;
+                            }
                         }
                     }
+                }
+                if post_failed {
+                    log::debug!(
+                        "[screenshot] post_screencap failed or disconnected for {}, stopping",
+                        instance_id
+                    );
+                    stream.subscribers.lock().unwrap().clear();
+                    break;
                 }
             }
 

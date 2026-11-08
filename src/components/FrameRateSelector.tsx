@@ -21,8 +21,11 @@ const FRAME_RATE_OPTIONS: { value: ScreenshotFrameRate; labelKey: string }[] = [
   { value: '0.033', labelKey: 'screenshot.frameRate.every30s' },
 ];
 
-/** 根据帧率设置计算帧间隔（毫秒） */
-export function getFrameInterval(frameRate: ScreenshotFrameRate): number {
+/** 根据帧率设置计算帧间隔（毫秒）；MuMu 实例在默认 '5' 或 'unlimited' 下使用 40ms (25 FPS) 实时流 */
+export function getFrameInterval(frameRate: ScreenshotFrameRate, isMuMu = false): number {
+  if (isMuMu && (frameRate === '5' || frameRate === 'unlimited')) {
+    return 40;
+  }
   switch (frameRate) {
     case 'unlimited':
       return 0; // 尽可能快
@@ -35,7 +38,7 @@ export function getFrameInterval(frameRate: ScreenshotFrameRate): number {
     case '0.033':
       return 30000; // 30 秒一帧
     default:
-      return 200;
+      return isMuMu ? 40 : 200;
   }
 }
 
