@@ -137,6 +137,16 @@ export default {
 
   // 특수 작업
   specialTask: {
+    mumuStart: {
+      label: '🚀 MuMu 에뮬레이터 시작',
+      description:
+        '현재 탭에 연결된 MuMu 에뮬레이터 인스턴스를 시작합니다 (작업 목록/파이프라인 위치와 무관하게 항상 기기 연결 전에 실행됩니다)',
+    },
+    mumuStop: {
+      label: '🛑 MuMu 에뮬레이터 종료',
+      description:
+        '현재 탭에 연결된 MuMu 에뮬레이터 인스턴스를 안전하게 종료합니다 (작업 목록/파이프라인 위치와 무관하게 항상 전체 작업 완료 후에 실행됩니다)',
+    },
     sleep: {
       label: '⏳ 카운트다운',
       optionLabel: '카운트다운 설정',
@@ -407,6 +417,17 @@ export default {
 
   // 컨트롤러
   controller: {
+    mumu: {
+      autoStart: 'Automatically start MuMu',
+      autoStartHint:
+        'Start the bound MuMu instance before tasks and wait for Android. Requires an automatically detected MuMu connection.',
+      autoShutdown: 'Close MuMu after tasks',
+      autoShutdownHint:
+        'Close the bound instance when the whole queue finishes, including failures, but not on manual stop. Also closes manually started instances.',
+      starting: 'Starting MuMu and waiting for Android…',
+      startFailed: 'Could not start MuMu',
+      shutdownFailed: 'Tasks finished, but MuMu could not be closed',
+    },
     title: '컨트롤러',
     selectController: '컨트롤러 선택',
     adb: 'Android 기기',

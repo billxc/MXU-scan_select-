@@ -1,5 +1,6 @@
 import type { ControllerItem, ControllerType, SavedDeviceInfo } from '@/types/interface';
 import type { AdbDevice, ControllerConfig } from '@/types/maa';
+import { getMuMuBinding, sameMuMuInstance } from '@/utils/mumu';
 import { hasValidUinputDimensions } from '@/utils/linuxUinput';
 import {
   LinuxInputMethod,
@@ -53,10 +54,10 @@ export function getDesktopWindowFilters(controller: ControllerItem | undefined):
   return {};
 }
 
-/** ADB 地址优先，兼容旧配置按名称匹配。 */
+/** MuMu 绑定优先（防止复制/克隆的新虚拟机复用相同 NAT 端口导致串号），ADB 地址次之，兼容旧配置按名称匹配。 */
 export function findMatchingAdbDevice(
   devices: readonly AdbDevice[],
-  savedDevice: Pick<SavedDeviceInfo, 'adbDeviceAddress' | 'adbDeviceName'> | undefined,
+  savedDevice: Pick<SavedDeviceInfo, 'adbDeviceAddress' | 'adbDeviceName' | 'mumu'> | undefined,
   requireUnique = false,
 ): AdbDevice | undefined {
   const address = savedDevice?.adbDeviceAddress;
@@ -64,7 +65,28 @@ export function findMatchingAdbDevice(
   const name = savedDevice?.adbDeviceName;
   const selectMatch = (matches: AdbDevice[]) =>
     matches.length > 0 && (!requireUnique || matches.length === 1) ? matches[0] : undefined;
-  const addressMatches = address ? devices.filter((device) => device.address === address) : [];
+
+  // 若已保存 MuMu 绑定（path + index），优先按 extras.mumu 精确匹配，
+  // 且在后续地址/名称回退时排除明确属于其他 MuMu 实例的设备。
+  if (savedDevice?.mumu) {
+    const mumuMatches = devices.filter((device) => {
+      const binding = getMuMuBinding(device.config);
+      return binding ? sameMuMuInstance(binding, savedDevice.mumu!) : false;
+    });
+    const mumuMatch = selectMatch(mumuMatches);
+    if (mumuMatch) return mumuMatch;
+  }
+
+  const compatibleWithSavedMuMu = (device: AdbDevice) => {
+    if (!savedDevice?.mumu) return true;
+    const binding = getMuMuBinding(device.config);
+    // 如果设备带有明确的 MuMu 绑定，但与保存的 MuMu 实例不同（如 index 0 vs index 1），不可按地址强行当成同一台设备
+    return !binding || sameMuMuInstance(binding, savedDevice.mumu);
+  };
+
+  const addressMatches = address
+    ? devices.filter((device) => device.address === address && compatibleWithSavedMuMu(device))
+    : [];
   const addressMatch = selectMatch(addressMatches);
   if (addressMatch) return addressMatch;
   if (addressMatches.length > 1) {
@@ -72,7 +94,9 @@ export function findMatchingAdbDevice(
     return selectMatch(namedMatches) || (requireUnique ? undefined : addressMatches[0]);
   }
 
-  const nameMatches = name ? devices.filter((device) => device.name === name) : [];
+  const nameMatches = name
+    ? devices.filter((device) => device.name === name && compatibleWithSavedMuMu(device))
+    : [];
   return selectMatch(nameMatches);
 }
 

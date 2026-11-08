@@ -7,7 +7,8 @@ use log::{info, warn};
 use maa_framework::custom::FnAction;
 use maa_framework::resource::Resource;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use std::sync::Arc;
+use tauri::{AppHandle, Emitter, Manager};
 
 // ============================================================================
 // MXU_SLEEP Custom Action
@@ -1063,6 +1064,146 @@ fn execute_power_set_mute(muted: bool) -> bool {
 }
 
 // ============================================================================
+// MXU_MUMU_START & MXU_MUMU_STOP Custom Actions
+// ============================================================================
+
+const MXU_MUMU_START_ACTION: &str = "MXU_MUMU_START_ACTION";
+const MXU_MUMU_STOP_ACTION: &str = "MXU_MUMU_STOP_ACTION";
+
+fn resolve_instance_mumu_binding(
+    app_handle: &AppHandle,
+    instance_id: &str,
+) -> Option<crate::commands::mumu::MuMuBinding> {
+    if let Some(maa_state) = app_handle.try_state::<Arc<crate::commands::types::MaaState>>() {
+        if let Ok(instances) = maa_state.instances.lock() {
+            if let Some(inst) = instances.get(instance_id) {
+                if let Some(binding) = inst.mumu_shutdown_binding.clone() {
+                    return Some(binding);
+                }
+                if let Some(crate::commands::types::ControllerConfig::Adb { config, .. }) =
+                    inst.controller_config.as_ref()
+                {
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(config) {
+                        if let Some(mumu) = value.pointer("/extras/mumu") {
+                            if let Ok(binding) =
+                                serde_json::from_value::<crate::commands::mumu::MuMuBinding>(
+                                    mumu.clone(),
+                                )
+                            {
+                                return Some(binding);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(app_config) = app_handle.try_state::<Arc<crate::commands::app_config::AppConfigState>>() {
+        if let Ok(cfg) = app_config.config.lock() {
+            if let Some(instances) = cfg.get("instances").and_then(|v| v.as_array()) {
+                for inst in instances {
+                    if inst.get("id").and_then(|v| v.as_str()) == Some(instance_id) {
+                        if let Some(mumu) = inst.pointer("/savedDevice/mumu") {
+                            if let Ok(binding) =
+                                serde_json::from_value::<crate::commands::mumu::MuMuBinding>(
+                                    mumu.clone(),
+                                )
+                            {
+                                return Some(binding);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn mxu_mumu_start_action_impl(
+    _ctx: &maa_framework::context::Context,
+    _args: &maa_framework::custom::ActionArgs,
+    app_handle: Option<&AppHandle>,
+    instance_id: Option<&str>,
+) -> bool {
+    let (Some(app), Some(id)) = (app_handle, instance_id) else {
+        warn!("[MXU_MUMU_START] Missing app handle or instance id");
+        return false;
+    };
+
+    let Some(binding) = resolve_instance_mumu_binding(app, id) else {
+        info!(
+            "[MXU_MUMU_START] Instance {} has no saved MuMu binding, treating as already prepared",
+            id
+        );
+        return true;
+    };
+
+    let Some(maa_state) = app.try_state::<Arc<crate::commands::types::MaaState>>() else {
+        warn!("[MXU_MUMU_START] MaaState not available");
+        return false;
+    };
+
+    info!(
+        "[MXU_MUMU_START] Ensuring MuMu emulator (index={}) is started for instance {}",
+        binding.index, id
+    );
+    let state_clone = Arc::clone(&maa_state);
+    let id_owned = id.to_string();
+    match tauri::async_runtime::block_on(async move {
+        crate::commands::mumu::prepare_mumu_impl(&state_clone, id_owned, binding).await
+    }) {
+        Ok(()) => {
+            info!("[MXU_MUMU_START] MuMu emulator ready");
+            true
+        }
+        Err(e) => {
+            warn!("[MXU_MUMU_START] Failed to start MuMu emulator: {}", e);
+            false
+        }
+    }
+}
+
+fn mxu_mumu_stop_action_impl(
+    _ctx: &maa_framework::context::Context,
+    _args: &maa_framework::custom::ActionArgs,
+    app_handle: Option<&AppHandle>,
+    instance_id: Option<&str>,
+) -> bool {
+    let (Some(app), Some(id)) = (app_handle, instance_id) else {
+        warn!("[MXU_MUMU_STOP] Missing app handle or instance id");
+        return false;
+    };
+
+    let Some(binding) = resolve_instance_mumu_binding(app, id) else {
+        warn!(
+            "[MXU_MUMU_STOP] Instance {} has no MuMu binding to shut down",
+            id
+        );
+        return false;
+    };
+
+    let Some(maa_state) = app.try_state::<Arc<crate::commands::types::MaaState>>() else {
+        warn!("[MXU_MUMU_STOP] MaaState not available");
+        return false;
+    };
+
+    if let Ok(mut instances) = maa_state.instances.lock() {
+        if let Some(inst) = instances.get_mut(id) {
+            inst.mumu_shutdown_binding = Some(binding.clone());
+        }
+    }
+
+    info!(
+        "[MXU_MUMU_STOP] Armed MuMu shutdown (index={}) for instance {}",
+        binding.index, id
+    );
+    true
+}
+
+// ============================================================================
 // 注册入口
 // ============================================================================
 
@@ -1153,6 +1294,53 @@ pub fn register_all_mxu_actions(
             "[MXU] Custom action {} registered successfully",
             MXU_KILLPROC_ACTION
         );
+    }
+
+    for (action_name, handler) in [
+        (
+            MXU_MUMU_START_ACTION,
+            mxu_mumu_start_action_impl
+                as fn(
+                    &maa_framework::context::Context,
+                    &maa_framework::custom::ActionArgs,
+                    Option<&AppHandle>,
+                    Option<&str>,
+                ) -> bool,
+        ),
+        (MXU_MUMU_STOP_ACTION, mxu_mumu_stop_action_impl),
+    ] {
+        let mumu_app_handle = app_handle.clone();
+        let mumu_instance_id = instance_id.to_string();
+        let wrapper = move |ctx: &maa_framework::context::Context,
+                            args: &maa_framework::custom::ActionArgs|
+              -> bool {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                handler(ctx, args, Some(&mumu_app_handle), Some(&mumu_instance_id))
+            }))
+            .unwrap_or_else(|e| {
+                let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = e.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "Unknown panic payload".to_string()
+                };
+                log::error!("[MXU] Custom action {} panicked: {}", action_name, msg);
+                false
+            })
+        };
+
+        if let Err(e) =
+            resource.register_custom_action(action_name, Box::new(FnAction::new(wrapper)))
+        {
+            warn!("[MXU] Failed to register {}: {:?}", action_name, e);
+            failed_count += 1;
+        } else {
+            info!(
+                "[MXU] Custom action {} registered successfully",
+                action_name
+            );
+        }
     }
 
     if failed_count > 0 {

@@ -135,6 +135,16 @@ export default {
 
   // 特殊任務
   specialTask: {
+    mumuStart: {
+      label: '🚀 啟動MuMu模擬器',
+      description:
+        '啟動當前分頁綁定的 MuMu 模擬器實例（始終在連接設備前自動準備並啟動，執行時機固定，與在任務列表/Pipeline 中的位置無關）',
+    },
+    mumuStop: {
+      label: '🛑 關閉MuMu模擬器',
+      description:
+        '安全斷開連接並關閉當前分頁綁定的 MuMu 模擬器實例（始終在整個任務佇列執行完畢後觸發關閉，執行時機固定，與在任務列表/Pipeline 中的位置無關）',
+    },
     sleep: {
       label: '⏳ 倒數計時',
       optionLabel: '倒數計時設定',
@@ -400,6 +410,17 @@ export default {
 
   // 控制器
   controller: {
+    mumu: {
+      autoStart: '自動啟動 MuMu',
+      autoStartHint:
+        '開始任務前啟動綁定的 MuMu 執行個體，並等待安卓就緒。僅支援 MuMu 自動識別連線。',
+      autoShutdown: '任務結束後關閉 MuMu',
+      autoShutdownHint:
+        '整批任務自然結束（含失敗）後關閉綁定執行個體；手動停止不關閉。即使是手動啟動也會關閉。',
+      starting: '正在啟動 MuMu 並等待安卓就緒…',
+      startFailed: 'MuMu 啟動失敗',
+      shutdownFailed: '任務已結束，但 MuMu 關閉失敗',
+    },
     title: '控制器',
     selectController: '選擇控制器',
     adb: 'Android 裝置',

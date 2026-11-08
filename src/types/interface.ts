@@ -402,6 +402,7 @@ export type OptionValue =
 
 // 保存的设备信息（运行时使用）
 export interface SavedDeviceInfo {
+  mumu?: import('./maa').MuMuSettings;
   adbDeviceName?: string;
   /** ADB 设备地址，用于优先恢复连接；旧配置仍可按名称匹配 */
   adbDeviceAddress?: string;

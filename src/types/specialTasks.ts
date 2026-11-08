@@ -73,6 +73,16 @@ export const MXU_POWER_TASK_NAME = '__MXU_POWER__';
 export const MXU_POWER_ENTRY = 'MXU_POWER';
 export const MXU_POWER_ACTION = 'MXU_POWER_ACTION';
 
+// MXU_MUMU_START 特殊任务常量
+export const MXU_MUMU_START_TASK_NAME = '__MXU_MUMU_START__';
+export const MXU_MUMU_START_ENTRY = 'MXU_MUMU_START';
+export const MXU_MUMU_START_ACTION = 'MXU_MUMU_START_ACTION';
+
+// MXU_MUMU_STOP 特殊任务常量
+export const MXU_MUMU_STOP_TASK_NAME = '__MXU_MUMU_STOP__';
+export const MXU_MUMU_STOP_ENTRY = 'MXU_MUMU_STOP';
+export const MXU_MUMU_STOP_ACTION = 'MXU_MUMU_STOP_ACTION';
+
 // 这类特殊任务不依赖游戏画面，固定 target 可避免在窗口消失后被空识别框拦截。
 const MXU_NON_VISUAL_CUSTOM_TARGET: [number, number, number, number] = [0, 0, 1, 1];
 
@@ -491,6 +501,36 @@ const MXU_POWER_TASK_DEF_INTERNAL: TaskItem = {
   },
 };
 
+// MXU_MUMU_START 任务定义（启动当前标签页绑定的 MuMu 模拟器）
+const MXU_MUMU_START_TASK_DEF_INTERNAL: TaskItem = {
+  name: MXU_MUMU_START_TASK_NAME,
+  label: 'specialTask.mumuStart.label',
+  description: 'specialTask.mumuStart.description',
+  entry: MXU_MUMU_START_ENTRY,
+  pipeline_override: {
+    [MXU_MUMU_START_ENTRY]: {
+      action: 'Custom',
+      custom_action: MXU_MUMU_START_ACTION,
+      target: MXU_NON_VISUAL_CUSTOM_TARGET,
+    },
+  },
+};
+
+// MXU_MUMU_STOP 任务定义（任务结束后关闭当前标签页绑定的 MuMu 模拟器）
+const MXU_MUMU_STOP_TASK_DEF_INTERNAL: TaskItem = {
+  name: MXU_MUMU_STOP_TASK_NAME,
+  label: 'specialTask.mumuStop.label',
+  description: 'specialTask.mumuStop.description',
+  entry: MXU_MUMU_STOP_ENTRY,
+  pipeline_override: {
+    [MXU_MUMU_STOP_ENTRY]: {
+      action: 'Custom',
+      custom_action: MXU_MUMU_STOP_ACTION,
+      target: MXU_NON_VISUAL_CUSTOM_TARGET,
+    },
+  },
+};
+
 // MXU_POWER 下拉选项定义（关机/重启/息屏/睡眠/休眠/静音/解除静音）
 const MXU_POWER_OPTION_DEF_INTERNAL: SelectOption = {
   type: 'select',
@@ -590,6 +630,22 @@ const MXU_POWER_OPTION_DEF_INTERNAL: SelectOption = {
  * 排序（不含"前置任务"，前置任务在 AddTaskPanel 中独立渲染）：
  */
 export const MXU_SPECIAL_TASKS: Record<string, MxuSpecialTaskDefinition> = {
+  [MXU_MUMU_START_TASK_NAME]: {
+    taskName: MXU_MUMU_START_TASK_NAME,
+    entry: MXU_MUMU_START_ENTRY,
+    taskDef: MXU_MUMU_START_TASK_DEF_INTERNAL,
+    optionDefs: {},
+    iconName: 'Play',
+    iconColorClass: 'text-success/80',
+  },
+  [MXU_MUMU_STOP_TASK_NAME]: {
+    taskName: MXU_MUMU_STOP_TASK_NAME,
+    entry: MXU_MUMU_STOP_ENTRY,
+    taskDef: MXU_MUMU_STOP_TASK_DEF_INTERNAL,
+    optionDefs: {},
+    iconName: 'Power',
+    iconColorClass: 'text-error/80',
+  },
   [MXU_SLEEP_TASK_NAME]: {
     taskName: MXU_SLEEP_TASK_NAME,
     entry: MXU_SLEEP_ENTRY,

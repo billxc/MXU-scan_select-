@@ -31,6 +31,7 @@ export interface SavedTask {
 
 // 保存的设备信息
 export interface SavedDeviceInfo {
+  mumu?: import('./maa').MuMuSettings;
   // ADB 设备：保存设备名称
   adbDeviceName?: string;
   // ADB 设备：保存设备地址（新配置优先，旧配置仍可按名称匹配）

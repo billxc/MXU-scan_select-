@@ -142,6 +142,16 @@ export default {
 
   // Special tasks
   specialTask: {
+    mumuStart: {
+      label: '🚀 Start MuMu Emulator',
+      description:
+        'Starts the MuMu emulator instance bound to the current tab (always runs before connecting to the device, regardless of its position in the task list / pipeline)',
+    },
+    mumuStop: {
+      label: '🛑 Stop MuMu Emulator',
+      description:
+        'Safely disconnects and shuts down the MuMu emulator instance bound to the current tab (always runs after the entire task queue finishes, regardless of its position in the task list / pipeline)',
+    },
     sleep: {
       label: '⏳ Countdown',
       optionLabel: 'Countdown Settings',
@@ -418,6 +428,17 @@ export default {
 
   // Controller
   controller: {
+    mumu: {
+      autoStart: 'Automatically start MuMu',
+      autoStartHint:
+        'Start the bound MuMu instance before tasks and wait for Android. Requires an automatically detected MuMu connection.',
+      autoShutdown: 'Close MuMu after tasks',
+      autoShutdownHint:
+        'Close the bound instance when the whole queue finishes, including failures, but not on manual stop. Also closes manually started instances.',
+      starting: 'Starting MuMu and waiting for Android…',
+      startFailed: 'Could not start MuMu',
+      shutdownFailed: 'Tasks finished, but MuMu could not be closed',
+    },
     title: 'Controller',
     selectController: 'Select Controller',
     adb: 'Android Device',
