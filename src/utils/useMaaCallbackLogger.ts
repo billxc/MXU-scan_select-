@@ -26,6 +26,19 @@ const log = loggers.app;
 
 const AGENT_LOG_FLOOD_WINDOW_MS = 2000;
 const AGENT_LOG_FLOOD_THRESHOLD = 15;
+const AGENT_LOG_PRIORITY_PATTERNS = [
+  '[战斗耗时对比]',
+  '[auto_battle_repeat]',
+  '[auto_battle] end',
+  '[ChaldeaPlan]',
+  '[英灵选卡] 实际出卡=',
+  'error:🔴',
+  'warn:⚠️',
+];
+
+function isPriorityAgentLogLine(line: string): boolean {
+  return AGENT_LOG_PRIORITY_PATTERNS.some((pattern) => line.includes(pattern));
+}
 
 // 每次会话只请求一次通知权限，避免多条 focus 消息重复弹权限弹窗
 let focusNotificationPermissionRequested = false;
@@ -259,6 +272,27 @@ export function useMaaCallbackLogger() {
         const unlisten = await maaService.onCallback((message, details) => {
           // 组件已卸载则忽略
           if (cancelled) return;
+
+          if (message === 'MuMu.Shutdown.Failed') {
+            const targetId = (details as Record<string, unknown>).instance_id;
+            if (typeof targetId === 'string') {
+              addLog(targetId, {
+                type: 'error',
+                message: `${t('controller.mumu.shutdownFailed')}: ${String((details as Record<string, unknown>).error)}`,
+              });
+            }
+            return;
+          }
+
+          if (message === 'Controller.MuMu.Disconnected') {
+            const targetId = (details as Record<string, unknown>).instance_id;
+            if (typeof targetId === 'string') {
+              const store = useAppStore.getState();
+              store.setInstanceConnectionStatus(targetId, 'Disconnected');
+              store.setInstanceScreenshotStreaming(targetId, false);
+            }
+            return;
+          }
 
           // 获取当前活动实例 ID
           const currentActiveId = useAppStore.getState().activeInstanceId;
@@ -705,6 +739,9 @@ export function useMaaAgentLogger() {
       state.recentTimestamps = pruneAgentFloodWindow(state.recentTimestamps, now);
 
       if (state.floodSuppressed) {
+        if (isPriorityAgentLogLine(line)) {
+          emitAgentLog(instanceId, line);
+        }
         scheduleAgentRecoveryCheck(instanceId);
         return;
       }
@@ -718,6 +755,9 @@ export function useMaaAgentLogger() {
             type: 'warning',
             message: t('logs.messages.agentLogFloodWarning'),
           });
+        }
+        if (isPriorityAgentLogLine(line)) {
+          emitAgentLog(instanceId, line);
         }
         scheduleAgentRecoveryCheck(instanceId);
         return;

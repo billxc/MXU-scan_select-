@@ -261,6 +261,54 @@ pub(crate) fn spawn_child_output_reader<R: Read + Send + 'static>(
 fn emit_agent_output(app: &tauri::AppHandle, instance_id: &str, stream: &str, line: &str) {
     let clean_line = strip_ansi_escapes(line);
 
+    // 关键摘要行（如耗时汇总、结算结果、错误/警告）同步写入后端 log_buffer，
+    // 确保即便没有浏览器连接或从外部触发，打开页面也能看到运行记录
+    for single in clean_line.lines() {
+        let trimmed = single.trim();
+        if trimmed.contains("[战斗耗时对比]")
+            || trimmed.contains("[auto_battle_repeat] Battle")
+            || trimmed.contains("[auto_battle_repeat] end")
+            || trimmed.contains("[英灵选卡] 实际出卡=")
+            || trimmed.starts_with("error:")
+            || trimmed.starts_with("warn:")
+        {
+            if let Some(maa_state) = app.try_state::<Arc<MaaState>>() {
+                if let Ok(mut buf) = maa_state.log_buffer.lock() {
+                    let log_type = if trimmed.starts_with("error:") {
+                        "error"
+                    } else if trimmed.starts_with("warn:") {
+                        "warning"
+                    } else if trimmed.contains("[战斗耗时对比]") || trimmed.contains("成功") {
+                        "focus"
+                    } else {
+                        "agent"
+                    };
+                    let msg = trimmed
+                        .strip_prefix("info:")
+                        .or_else(|| trimmed.strip_prefix("warn:"))
+                        .or_else(|| trimmed.strip_prefix("error:"))
+                        .unwrap_or(trimmed)
+                        .trim();
+                    let seq = buf
+                        .get_all()
+                        .get(instance_id)
+                        .map(|v| v.len())
+                        .unwrap_or(0);
+                    buf.push(
+                        instance_id,
+                        super::types::LogEntryDto {
+                            id: format!("srv-{}-{}", chrono::Utc::now().timestamp_millis(), seq),
+                            timestamp: chrono::Utc::now().to_rfc3339(),
+                            log_type: log_type.to_string(),
+                            message: msg.to_string(),
+                            html: None,
+                        },
+                    );
+                }
+            }
+        }
+    }
+
     // 广播到所有 WebSocket 客户端
     if let Some(ws) = app.try_state::<Arc<crate::ws_broadcast::WsBroadcast>>() {
         ws.send(crate::ws_broadcast::WsEvent::AgentOutput {
@@ -562,6 +610,7 @@ pub async fn start_tasks_impl(
     pi_envs: Option<HashMap<String, String>>,
     reset_state: bool,
     controller_info: Option<ControllerInfo>,
+    mumu_shutdown_binding: Option<super::mumu::MuMuBinding>,
 ) -> Result<Vec<i64>, String> {
     info!("start_tasks_impl called");
 
@@ -574,6 +623,36 @@ pub async fn start_tasks_impl(
         debug!("[start_tasks] Acquiring instances lock...");
         let mut instances = maa_state.instances.lock().map_err(|e| e.to_string())?;
         debug!("[start_tasks] Instances lock acquired");
+        let current = instances.get(&instance_id).ok_or("Instance not found")?;
+        if current.finalizing
+            || (current.mumu_shutdown_binding.is_some()
+                && ((reset_state && current.is_running()) || (!reset_state && current.run_finalized)))
+        {
+            return Err("MUMU_START_FAILED: instance is running or finalizing".into());
+        }
+        if instances.iter().any(|(id, other)| {
+            id != &instance_id
+                && other.finalizing
+                && other.mumu_shutdown_binding.is_some()
+                && current.controller_config.is_some()
+                && current.controller_config == other.controller_config
+        }) {
+            return Err("MUMU_BINDING_MISMATCH: shared controller is shutting down".into());
+        }
+        if reset_state {
+            if let Some(binding) = &mumu_shutdown_binding {
+                super::mumu::manager_path(binding)?;
+                binding.validate_controller(current.controller_config.as_ref())?;
+                if instances.iter().any(|(id, other)| {
+                    id != &instance_id
+                        && other.is_running()
+                        && (other.controller_config == current.controller_config
+                            || other.mumu_shutdown_binding.as_ref().is_some_and(|b| binding.matches(b)))
+                }) {
+                    return Err("MUMU_BINDING_MISMATCH: another running instance shares this controller or MuMu target".into());
+                }
+            }
+        }
         let instance = instances
             .get_mut(&instance_id)
             .ok_or("Instance not found")?;
@@ -767,6 +846,16 @@ pub async fn start_tasks_impl(
         if reset_state {
             // 首批：重置任务运行状态
             instance.task_ids.clear();
+            instance.completed_task_ids.clear();
+            instance.run_has_failed = false;
+            instance.run_finalized = false;
+            instance.finalizing = false;
+            instance.run_cancelled = false;
+            if mumu_shutdown_binding.is_some() {
+                instance.stop_in_progress = false;
+                instance.stop_started_at = None;
+            }
+            instance.mumu_shutdown_binding = mumu_shutdown_binding;
             let state = &mut instance.task_run_state;
             state.statuses.clear();
             state.mappings.clear();
@@ -854,6 +943,7 @@ pub async fn maa_start_tasks(
     pi_envs: Option<HashMap<String, String>>,
     reset_state: Option<bool>,
     controller_info: Option<ControllerInfo>,
+    mumu_shutdown_binding: Option<super::mumu::MuMuBinding>,
 ) -> Result<Vec<i64>, String> {
     start_tasks_impl(
         app,
@@ -866,6 +956,7 @@ pub async fn maa_start_tasks(
         pi_envs,
         reset_state.unwrap_or(true),
         controller_info,
+        mumu_shutdown_binding,
     )
     .await
 }
@@ -876,7 +967,10 @@ pub fn stop_agent_impl(maa_state: &Arc<MaaState>, instance_id: &str) -> Result<(
 
     let (clients, children) = {
         let mut instances = maa_state.instances.lock().map_err(|e| e.to_string())?;
-        let instance = instances.get_mut(instance_id).ok_or("Instance not found")?;
+        let Some(instance) = instances.get_mut(instance_id) else {
+            debug!("[stop_agent] Instance {} already removed, skipping", instance_id);
+            return Ok(());
+        };
 
         (
             std::mem::take(&mut instance.agent_clients),

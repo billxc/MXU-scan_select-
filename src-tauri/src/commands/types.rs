@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::process::Child;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -245,6 +245,38 @@ pub struct InstanceRuntime {
     pub stop_started_at: Option<Instant>,
     /// 任务运行状态（后端管理，单一真相来源）
     pub task_run_state: TaskRunState,
+    /// Terminal task IDs, including tasks without a selected_task_id.
+    pub completed_task_ids: HashSet<i64>,
+    pub run_has_failed: bool,
+    /// Claimed once by the last natural callback; stays true until the next run.
+    pub run_finalized: bool,
+    /// Agent cleanup and optional emulator shutdown are still in progress.
+    pub finalizing: bool,
+    /// Persistent for this run, even after stop_in_progress is cleared by a query.
+    pub run_cancelled: bool,
+    /// Frozen on the first batch; appending tasks never changes this binding.
+    pub mumu_shutdown_binding: Option<super::mumu::MuMuBinding>,
+}
+
+impl InstanceRuntime {
+    pub fn is_running(&self) -> bool {
+        self.finalizing || self.tasker.as_ref().is_some_and(|t| t.running())
+    }
+
+    pub fn claim_finalization(&mut self) -> bool {
+        if self.mumu_shutdown_binding.is_none()
+            || self.run_finalized
+            || self.run_cancelled
+            || self.stop_in_progress
+            || self.task_run_state.pending_task_ids.is_empty()
+            || !self.task_run_state.pending_task_ids.iter().all(|id| self.completed_task_ids.contains(id))
+        {
+            return false;
+        }
+        self.run_finalized = true;
+        self.finalizing = true;
+        true
+    }
 }
 
 impl Drop for InstanceRuntime {
@@ -261,13 +293,30 @@ impl Drop for InstanceRuntime {
             let _ = child.wait();
         }
 
-        if let Some(tasker) = self.tasker.take() {
+        let tasker = self.tasker.take();
+        let controller = self.controller.take();
+        let resource = self.resource.take();
+
+        if tasker.as_ref().is_some_and(|t| t.running()) {
+            if let Some(ref t) = tasker {
+                let _ = t.post_stop();
+            }
+            // 若 Tasker 内部识别/动作线程尚未完全退出，切勿在当前线程同步销毁 Tasker/Resource，
+            // 否则 MaaFramework.dll 内部 Recognizer::recognize 写回 RuntimeCache 时会触发 0xc0000005 Use-After-Free 崩溃。
+            std::thread::spawn(move || {
+                if let Some(ref t) = tasker {
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+                    while t.running() && std::time::Instant::now() < deadline {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                }
+                drop(tasker);
+                drop(controller);
+                drop(resource);
+            });
+        } else {
             drop(tasker);
-        }
-        if let Some(controller) = self.controller.take() {
             drop(controller);
-        }
-        if let Some(resource) = self.resource.take() {
             drop(resource);
         }
     }
@@ -342,6 +391,7 @@ pub struct MaaState {
     pub instances: Mutex<HashMap<String, InstanceRuntime>>,
     /// 前置程序停止请求（用于中断等待退出）
     pub pre_action_stop_requests: Mutex<HashSet<String>>,
+    pub mumu_starts: Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>,
     /// Controller 连接池：相同配置的 Controller 复用同一个 MaaControllerHandle
     pub controller_pool: Mutex<HashMap<ControllerConfig, Controller>>,
     /// 缓存的 ADB 设备列表（全局共享，避免重复搜索）
