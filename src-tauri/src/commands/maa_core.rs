@@ -323,22 +323,41 @@ fn update_instance_controller(
     controller: maa_framework::controller::Controller,
     new_config: super::types::ControllerConfig,
 ) -> Result<(), String> {
-    let cleanup_config = {
+    let (cleanup_config, old_tasker, old_controller) = {
         let mut instances = state.instances.lock().map_err(|e| e.to_string())?;
         let instance = instances.get_mut(instance_id).ok_or("Instance not found")?;
 
-        let old_config = instance.controller_config.clone();
-        instance.controller = Some(controller);
-        instance.controller_config = Some(new_config.clone());
-        instance.tasker = None;
+        let old_tasker = instance.tasker.take();
+        let old_controller = instance.controller.replace(controller);
+        let old_config = instance.controller_config.replace(new_config.clone());
 
-        old_config.filter(|old| {
+        let cleanup = old_config.filter(|old| {
             *old != new_config
                 && !instances
                     .values()
                     .any(|inst| inst.controller_config.as_ref() == Some(old))
-        })
+        });
+        (cleanup, old_tasker, old_controller)
     };
+
+    if old_tasker.as_ref().is_some_and(|t| t.running()) {
+        if let Some(ref t) = old_tasker {
+            let _ = t.post_stop();
+        }
+        std::thread::spawn(move || {
+            if let Some(ref t) = old_tasker {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+                while t.running() && std::time::Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            }
+            drop(old_tasker);
+            drop(old_controller);
+        });
+    } else {
+        drop(old_tasker);
+        drop(old_controller);
+    }
 
     if let Some(old_cfg) = cleanup_config {
         if let Ok(mut pool) = state.controller_pool.lock() {
@@ -527,6 +546,9 @@ pub fn maa_check_version(state: State<Arc<MaaState>>) -> Result<VersionCheckResu
 /// 查找 ADB 设备（结果会缓存到 MaaState）
 /// 查找 ADB 设备的内部实现（可从 Tauri 命令和 HTTP 处理器共享调用）
 pub async fn find_adb_devices_impl(state: Arc<MaaState>) -> Result<Vec<AdbDevice>, String> {
+    // 扫描设备前先统一清理跨会话与残留的 MuMu 僵尸进程，防止僵尸进程占用主槽位导致 ADB 端口漂移（如 16480 -> 16481）
+    super::mumu::sanitize_mumu_environment(None).await;
+
     tokio::task::spawn_blocking(move || {
         let devices = Toolkit::find_adb_devices().map_err(|e| e.to_string())?;
 
@@ -804,6 +826,7 @@ pub async fn connect_controller_impl(
     instance_id: String,
     config: ControllerConfig,
     on_event: Arc<dyn Fn(&str, &str) + Send + Sync + 'static>,
+    app: Option<tauri::AppHandle>,
 ) -> Result<i64, String> {
     tokio::task::spawn_blocking(move || {
         // ControllerPool: 检查是否有可复用的已连接控制器
@@ -829,6 +852,9 @@ pub async fn connect_controller_impl(
             let details = format!(r#"{{"ctrl_id":{},"action":"Connect"}}"#, conn_id);
             on_event("Controller.Action.Starting", &details);
             on_event("Controller.Action.Succeeded", &details);
+            if let Some(app_handle) = &app {
+                super::utils::emit_state_changed(app_handle, &instance_id, "connected");
+            }
 
             return Ok(conn_id);
         }
@@ -1018,9 +1044,24 @@ pub async fn connect_controller_impl(
 
         // 注册回调（使用 on_event 抽象，Tauri 命令传入 emit_callback_event，HTTP 处理器传入无操作或 WebSocket 推送）
         let on_event_clone = on_event.clone();
+        let app_for_sink = app.clone();
+        let inst_id_for_sink = instance_id.clone();
         controller
             .add_sink(move |msg, detail| {
                 on_event_clone(msg, detail);
+                if msg == "Controller.Action.Succeeded" {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(detail) {
+                        if val.get("action").and_then(|v| v.as_str()) == Some("Connect") {
+                            if let Some(app_handle) = &app_for_sink {
+                                super::utils::emit_state_changed(
+                                    app_handle,
+                                    &inst_id_for_sink,
+                                    "connected",
+                                );
+                            }
+                        }
+                    }
+                }
             })
             .map_err(|e| e.to_string())?;
 
@@ -1132,17 +1173,14 @@ pub async fn maa_connect_controller(
     );
 
     let app_clone = app.clone();
-    let result = connect_controller_impl(
+    connect_controller_impl(
         state.inner().clone(),
-        instance_id.clone(),
+        instance_id,
         config,
         Arc::new(move |msg, detail| emit_callback_event(&app, msg, detail)),
+        Some(app_clone),
     )
-    .await;
-    if result.is_ok() {
-        super::utils::emit_state_changed(&app_clone, &instance_id, "connected");
-    }
-    result
+    .await
 }
 
 /// 获取连接状态（通过 MaaControllerConnected API 查询）
@@ -1460,6 +1498,9 @@ pub fn stop_task_impl(state: &MaaState, instance_id: &str) -> Result<(), String>
     let mut instances = state.instances.lock().map_err(|e| e.to_string())?;
     let instance = instances.get_mut(instance_id).ok_or("Instance not found")?;
     let tasker = instance.tasker.as_ref().ok_or("Tasker not created")?;
+    if instance.mumu_shutdown_binding.is_some() {
+        instance.run_cancelled = true;
+    }
 
     if instance.stop_in_progress {
         if !tasker.running() {
@@ -1545,7 +1586,7 @@ pub fn maa_is_running(state: State<Arc<MaaState>>, instance_id: String) -> Resul
     let instances = state.instances.lock().map_err(|e| e.to_string())?;
     let instance = instances.get(&instance_id).ok_or("Instance not found")?;
 
-    Ok(instance.tasker.as_ref().is_some_and(|t| t.running()))
+    Ok(instance.is_running())
 }
 
 // ============================================================================
@@ -1563,6 +1604,92 @@ pub fn post_click_impl(state: &MaaState, instance_id: &str, x: i32, y: i32) -> R
     controller.post_click(x, y).map_err(|e| e.to_string())
 }
 
+/// 发起滑动请求（内部实现）
+pub fn post_swipe_impl(
+    state: &MaaState,
+    instance_id: &str,
+    x1: i32,
+    y1: i32,
+    x2: i32,
+    y2: i32,
+    duration: i32,
+    contact: Option<i32>,
+    pressure: Option<i32>,
+) -> Result<i64, String> {
+    let instances = state.instances.lock().map_err(|e| e.to_string())?;
+    let instance = instances.get(instance_id).ok_or("Instance not found")?;
+    let controller = instance
+        .controller
+        .as_ref()
+        .ok_or("Controller not connected")?;
+    match (contact, pressure) {
+        (Some(c), Some(p)) => controller
+            .post_swipe_v2(x1, y1, x2, y2, duration, c, p)
+            .map_err(|e| e.to_string()),
+        (Some(c), None) => controller
+            .post_swipe_v2(x1, y1, x2, y2, duration, c, 1)
+            .map_err(|e| e.to_string()),
+        _ => controller
+            .post_swipe(x1, y1, x2, y2, duration)
+            .map_err(|e| e.to_string()),
+    }
+}
+
+/// 发起触控按下请求（内部实现）
+pub fn post_touch_down_impl(
+    state: &MaaState,
+    instance_id: &str,
+    contact: i32,
+    x: i32,
+    y: i32,
+    pressure: i32,
+) -> Result<i64, String> {
+    let instances = state.instances.lock().map_err(|e| e.to_string())?;
+    let instance = instances.get(instance_id).ok_or("Instance not found")?;
+    let controller = instance
+        .controller
+        .as_ref()
+        .ok_or("Controller not connected")?;
+    controller
+        .post_touch_down(contact, x, y, pressure)
+        .map_err(|e| e.to_string())
+}
+
+/// 发起触控移动请求（内部实现）
+pub fn post_touch_move_impl(
+    state: &MaaState,
+    instance_id: &str,
+    contact: i32,
+    x: i32,
+    y: i32,
+    pressure: i32,
+) -> Result<i64, String> {
+    let instances = state.instances.lock().map_err(|e| e.to_string())?;
+    let instance = instances.get(instance_id).ok_or("Instance not found")?;
+    let controller = instance
+        .controller
+        .as_ref()
+        .ok_or("Controller not connected")?;
+    controller
+        .post_touch_move(contact, x, y, pressure)
+        .map_err(|e| e.to_string())
+}
+
+/// 发起触控抬起请求（内部实现）
+pub fn post_touch_up_impl(
+    state: &MaaState,
+    instance_id: &str,
+    contact: i32,
+) -> Result<i64, String> {
+    let instances = state.instances.lock().map_err(|e| e.to_string())?;
+    let instance = instances.get(instance_id).ok_or("Instance not found")?;
+    let controller = instance
+        .controller
+        .as_ref()
+        .ok_or("Controller not connected")?;
+    controller.post_touch_up(contact).map_err(|e| e.to_string())
+}
+
 /// 发起点击请求
 #[tauri::command]
 pub fn maa_post_click(
@@ -1572,6 +1699,58 @@ pub fn maa_post_click(
     y: i32,
 ) -> Result<i64, String> {
     post_click_impl(&state, &instance_id, x, y)
+}
+
+/// 发起滑动请求
+#[tauri::command]
+pub fn maa_post_swipe(
+    state: State<Arc<MaaState>>,
+    instance_id: String,
+    x1: i32,
+    y1: i32,
+    x2: i32,
+    y2: i32,
+    duration: i32,
+    contact: Option<i32>,
+    pressure: Option<i32>,
+) -> Result<i64, String> {
+    post_swipe_impl(&state, &instance_id, x1, y1, x2, y2, duration, contact, pressure)
+}
+
+/// 发起触控按下请求
+#[tauri::command]
+pub fn maa_post_touch_down(
+    state: State<Arc<MaaState>>,
+    instance_id: String,
+    contact: i32,
+    x: i32,
+    y: i32,
+    pressure: Option<i32>,
+) -> Result<i64, String> {
+    post_touch_down_impl(&state, &instance_id, contact, x, y, pressure.unwrap_or(1))
+}
+
+/// 发起触控移动请求
+#[tauri::command]
+pub fn maa_post_touch_move(
+    state: State<Arc<MaaState>>,
+    instance_id: String,
+    contact: i32,
+    x: i32,
+    y: i32,
+    pressure: Option<i32>,
+) -> Result<i64, String> {
+    post_touch_move_impl(&state, &instance_id, contact, x, y, pressure.unwrap_or(1))
+}
+
+/// 发起触控抬起请求
+#[tauri::command]
+pub fn maa_post_touch_up(
+    state: State<Arc<MaaState>>,
+    instance_id: String,
+    contact: i32,
+) -> Result<i64, String> {
+    post_touch_up_impl(&state, &instance_id, contact)
 }
 
 // ============================================================================

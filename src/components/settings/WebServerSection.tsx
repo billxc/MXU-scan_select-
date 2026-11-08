@@ -26,7 +26,9 @@ export function WebServerSection() {
   }, [configuredPort]);
 
   useEffect(() => {
-    const loadWebServerInfo = async () => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const loadWebServerInfo = async (attempt = 0) => {
       if (isTauri()) {
         try {
           const { invoke } = await import('@tauri-apps/api/core');
@@ -34,7 +36,12 @@ export function WebServerSection() {
             invoke<number>('get_web_server_port'),
             invoke<string | null>('get_local_lan_ip'),
           ]);
-          setWebServerPort(port);
+          if (cancelled) return;
+          if (port > 0) {
+            setWebServerPort(port);
+          } else if (attempt < 10) {
+            timer = setTimeout(() => void loadWebServerInfo(attempt + 1), 500);
+          }
           setLanIp(localIp);
         } catch {}
       } else {
@@ -43,7 +50,11 @@ export function WebServerSection() {
         if (port) setWebServerPort(port);
       }
     };
-    loadWebServerInfo();
+    void loadWebServerInfo();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, []);
 
   const webServerAddress = (() => {

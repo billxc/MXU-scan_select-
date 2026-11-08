@@ -160,6 +160,11 @@ pub fn run() {
                 }
             }
 
+            // 启动时异步清理跨会话或残留的 MuMu 僵尸进程，避免阻塞或污染后续设备发现与启动
+            tauri::async_runtime::spawn(async {
+                commands::mumu::sanitize_mumu_environment(None).await;
+            });
+
             // Windows 下移除系统标题栏（使用自定义标题栏）
             // macOS/Linux 保留完整的原生标题栏
             #[cfg(target_os = "windows")]
@@ -262,11 +267,18 @@ pub fn run() {
             commands::maa_core::maa_override_pipeline,
             commands::maa_core::maa_is_running,
             commands::maa_core::maa_post_click,
+            commands::maa_core::maa_post_swipe,
+            commands::maa_core::maa_post_touch_down,
+            commands::maa_core::maa_post_touch_move,
+            commands::maa_core::maa_post_touch_up,
             commands::maa_core::maa_post_screencap,
             commands::maa_core::maa_get_cached_image,
             commands::maa_core::maa_screenshot_subscribe,
             commands::maa_core::maa_screenshot_unsubscribe,
             // Agent 命令
+            commands::mumu::query_mumu_status,
+            commands::mumu::prepare_mumu,
+            commands::mumu::cancel_mumu_start,
             commands::maa_agent::maa_start_tasks,
             commands::maa_agent::maa_stop_agent,
             // 文件操作命令

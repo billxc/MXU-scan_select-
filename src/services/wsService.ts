@@ -227,6 +227,22 @@ export function isConnected(): boolean {
   return ws?.readyState === WebSocket.OPEN;
 }
 
+/**
+ * 通过当前打开的 WebSocket 发送控制指令（如低延迟触控 down/move/up/swipe/click）。
+ * 若 WebSocket 未处于 OPEN 状态则返回 false，调用方自动降级为 HTTP API。
+ */
+export function sendWsJson(data: Record<string, unknown>): boolean {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    return false;
+  }
+  try {
+    ws.send(JSON.stringify(data));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ============================================================================
 // 订阅 API（返回取消订阅函数，与 Tauri unlisten 模式对齐）
 // ============================================================================

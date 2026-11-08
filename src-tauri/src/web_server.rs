@@ -28,7 +28,8 @@ use crate::commands::{
         connect_controller_impl, destroy_instance_impl, find_adb_devices_impl,
         find_gamescope_instances_impl, find_win32_windows_impl, find_wlroots_sockets_impl,
         get_cached_image_impl, load_resource_impl, override_pipeline_impl, post_click_impl,
-        post_screencap_impl, run_task_impl, stop_task_impl,
+        post_screencap_impl, post_swipe_impl, post_touch_down_impl, post_touch_move_impl,
+        post_touch_up_impl, run_task_impl, stop_task_impl,
     },
     types::{AgentConfig, ControllerConfig, ControllerInfo, MaaState, TaskConfig},
     utils::{emit_callback_event, emit_config_changed, emit_state_changed},
@@ -125,6 +126,7 @@ fn mime_from_extension(ext: &str) -> &'static str {
         "html" | "htm" => "text/html; charset=utf-8",
         "css" => "text/css; charset=utf-8",
         "js" | "mjs" => "application/javascript; charset=utf-8",
+        "webmanifest" => "application/manifest+json; charset=utf-8",
         "json" | "jsonc" => "application/json; charset=utf-8",
         "txt" => "text/plain; charset=utf-8",
         "md" => "text/markdown; charset=utf-8",
@@ -246,6 +248,18 @@ pub async fn start_web_server(
             axum::routing::post(handle_run_task),
         )
         .route(
+            "/maa/mumu/status",
+            axum::routing::post(handle_query_mumu_status),
+        )
+        .route(
+            "/maa/instances/:id/mumu/prepare",
+            axum::routing::post(handle_prepare_mumu),
+        )
+        .route(
+            "/maa/instances/:id/mumu/cancel",
+            axum::routing::post(handle_cancel_mumu_start),
+        )
+        .route(
             "/maa/instances/:id/tasks/start",
             axum::routing::post(handle_start_tasks),
         )
@@ -264,6 +278,22 @@ pub async fn start_web_server(
         .route(
             "/maa/instances/:id/click",
             axum::routing::post(handle_post_click),
+        )
+        .route(
+            "/maa/instances/:id/swipe",
+            axum::routing::post(handle_post_swipe),
+        )
+        .route(
+            "/maa/instances/:id/touch/down",
+            axum::routing::post(handle_post_touch_down),
+        )
+        .route(
+            "/maa/instances/:id/touch/move",
+            axum::routing::post(handle_post_touch_move),
+        )
+        .route(
+            "/maa/instances/:id/touch/up",
+            axum::routing::post(handle_post_touch_up),
         )
         .route("/maa/instances/:id/screenshot", get(handle_get_screenshot))
         .route(
@@ -314,29 +344,8 @@ pub async fn start_web_server(
     // 否则使用编译时内嵌的前端资源
     #[cfg(not(debug_assertions))]
     {
-        let exe_dir = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
-
-        let has_external_dist = exe_dir
-            .as_ref()
-            .map(|dir| dir.join("dist").exists())
-            .unwrap_or(false);
-
-        if has_external_dist {
-            let dist_dir = exe_dir.unwrap().join("dist");
-            log::info!("Web server: serving static files from {:?}", dist_dir);
-            app = app.fallback_service(
-                tower_http::services::ServeDir::new(&dist_dir)
-                    .append_index_html_on_directories(true)
-                    .fallback(tower_http::services::ServeFile::new(
-                        dist_dir.join("index.html"),
-                    )),
-            );
-        } else {
-            log::info!("Web server: serving embedded frontend assets");
-            app = app.fallback(serve_embedded);
-        }
+        log::info!("Web server: serving embedded frontend assets");
+        app = app.fallback(serve_embedded);
     }
 
     #[cfg(debug_assertions)]
@@ -360,6 +369,27 @@ pub async fn start_web_server(
     } else {
         "127.0.0.1"
     };
+    let ipv6_bind_host = if allow_lan_access { "[::]" } else { "[::1]" };
+
+    #[cfg(windows)]
+    fn prevent_socket_inheritance<T: std::os::windows::io::AsRawSocket>(listener: &T) {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn SetHandleInformation(
+                hObject: *mut std::ffi::c_void,
+                dwMask: u32,
+                dwFlags: u32,
+            ) -> i32;
+        }
+        const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
+        unsafe {
+            let _ = SetHandleInformation(
+                listener.as_raw_socket() as *mut std::ffi::c_void,
+                HANDLE_FLAG_INHERIT,
+                0,
+            );
+        }
+    }
 
     // 端口绑定策略：
     // 1. 先对默认端口重试几次（处理开发热重载时旧进程尚未退出的瞬态冲突）
@@ -372,6 +402,8 @@ pub async fn start_web_server(
             let addr = format!("{}:{}", bind_host, port);
             match tokio::net::TcpListener::bind(&addr).await {
                 Ok(l) => {
+                    #[cfg(windows)]
+                    prevent_socket_inheritance(&l);
                     result = Some((l, port));
                     break;
                 }
@@ -396,6 +428,8 @@ pub async fn start_web_server(
                 let addr = format!("{}:{}", bind_host, try_port);
                 match tokio::net::TcpListener::bind(&addr).await {
                     Ok(l) => {
+                        #[cfg(windows)]
+                        prevent_socket_inheritance(&l);
                         result = Some((l, try_port));
                         break;
                     }
@@ -426,6 +460,22 @@ pub async fn start_web_server(
                     actual_port
                 );
             }
+
+            // Windows 下绑定 0.0.0.0 / 127.0.0.1 仅监听 IPv4，而 localhost 会解析出 ::1 (IPv6) 和 127.0.0.1 (IPv4)。
+            // 同时在对应 IPv6 地址（[::] 或 [::1]）启动监听，避免浏览器或代理访问 localhost 时在 [::1] 上出现 ERR_CONNECTION_REFUSED。
+            let ipv6_addr = format!("{}:{}", ipv6_bind_host, actual_port);
+            if let Ok(ipv6_listener) = tokio::net::TcpListener::bind(&ipv6_addr).await {
+                #[cfg(windows)]
+                prevent_socket_inheritance(&ipv6_listener);
+                log::info!("Web server also listening on http://{}", ipv6_addr);
+                let app_v6 = app.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = axum::serve(ipv6_listener, app_v6).await {
+                        log::error!("Web server IPv6 error: {}", e);
+                    }
+                });
+            }
+
             if let Err(e) = axum::serve(listener, app).await {
                 log::error!("Web server error: {}", e);
             }
@@ -452,7 +502,7 @@ async fn handle_ws_upgrade(
     _headers: HeaderMap,
 ) -> impl IntoResponse {
     #[cfg(not(debug_assertions))]
-    if !is_same_origin_ws_request(&_headers) {
+    if !is_allowed_ws_request(&_headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
 
@@ -460,23 +510,65 @@ async fn handle_ws_upgrade(
         .into_response()
 }
 
-#[cfg(not(debug_assertions))]
-fn is_same_origin_ws_request(headers: &HeaderMap) -> bool {
+fn is_allowed_ws_request(headers: &HeaderMap) -> bool {
     let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) else {
         // 非浏览器客户端通常不带 Origin，保守兼容
         return true;
     };
+    let Ok(origin_uri) = origin.parse::<axum::http::Uri>() else {
+        return false;
+    };
+    let Some(origin_auth) = origin_uri.authority() else {
+        return false;
+    };
+
+    // 如果包含标准反向代理转发头（X-Forwarded-For / X-Forwarded-Host / X-Forwarded-Proto / X-Real-IP / Forwarded），
+    // 说明请求经过了反向代理，放行 WebSocket 升级。
+    for proxy_header in [
+        "x-forwarded-host",
+        "x-forwarded-for",
+        "x-forwarded-proto",
+        "x-real-ip",
+        "forwarded",
+    ] {
+        if headers.contains_key(proxy_header) {
+            return true;
+        }
+    }
+
     let Some(host) = headers.get(header::HOST).and_then(|v| v.to_str().ok()) else {
         return false;
     };
-    origin
-        .parse::<axum::http::Uri>()
+
+    let origin_host = origin_auth.host();
+    let host_only = host
+        .parse::<axum::http::uri::Authority>()
         .ok()
-        .and_then(|uri| {
-            uri.authority()
-                .map(|a| a.as_str().eq_ignore_ascii_case(host))
-        })
-        .unwrap_or(false)
+        .map(|a| a.host().to_string())
+        .unwrap_or_else(|| host.split(':').next().unwrap_or(host).to_string());
+
+    // 1. 完整 authority 或 hostname 匹配（兼容反代剝离端口或 HTTPS 默认端口）
+    if origin_auth.as_str().eq_ignore_ascii_case(host)
+        || origin_host.eq_ignore_ascii_case(&host_only)
+    {
+        return true;
+    }
+
+    // 2. 反代以默认 proxy_pass http://127.0.0.1:12701 转发且未设置 proxy_set_header Host 时，
+    //    Host 为本机回环地址或局域网内网地址，允许升级
+    let host_lower = host_only.to_ascii_lowercase();
+    if host_lower == "localhost"
+        || host_lower == "127.0.0.1"
+        || host_lower == "::1"
+        || host_lower == "[::1]"
+        || host_lower.starts_with("192.168.")
+        || host_lower.starts_with("10.")
+        || host_lower.starts_with("172.")
+    {
+        return true;
+    }
+
+    false
 }
 
 /// 每个 WebSocket 连接的处理循环
@@ -522,16 +614,92 @@ async fn handle_ws_connection(mut socket: WebSocket, state: WebState) {
                     break;
                 }
             }
-            // 接收客户端消息（主要用于检测断开）
+            // 接收客户端消息（支持低延迟触控指令及断开检测）
             msg = socket.recv() => {
                 match msg {
                     Some(Ok(Message::Close(_))) | None => break,
                     Some(Ok(Message::Pong(_))) => {} // 忽略 Pong
+                    Some(Ok(Message::Text(text))) => {
+                        handle_ws_client_message(&state, &text);
+                    }
                     Some(Ok(_)) => {}                // 忽略其他客户端消息
                     Some(Err(_)) => break,
                 }
             }
         }
+    }
+}
+
+/// 处理来自 WebSocket 客户端的控制消息（例如高频实时触控 down/move/up/swipe/click）
+fn handle_ws_client_message(state: &WebState, text: &str) {
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(text) else {
+        return;
+    };
+    let Some(msg_type) = val.get("type").and_then(|v| v.as_str()) else {
+        return;
+    };
+    let payload = val.get("payload").unwrap_or(&val);
+    let Some(instance_id) = payload
+        .get("instanceId")
+        .or_else(|| payload.get("instance_id"))
+        .and_then(|v| v.as_str())
+    else {
+        return;
+    };
+
+    match msg_type {
+        "touch" => {
+            let action = payload
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let contact = payload
+                .get("contact")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0) as i32;
+            let x = payload.get("x").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let y = payload.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let pressure = payload
+                .get("pressure")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(1) as i32;
+
+            let _ = match action {
+                "down" => post_touch_down_impl(&state.maa_state, instance_id, contact, x, y, pressure),
+                "move" => post_touch_move_impl(&state.maa_state, instance_id, contact, x, y, pressure),
+                "up" => post_touch_up_impl(&state.maa_state, instance_id, contact),
+                _ => Ok(0),
+            };
+        }
+        "click" => {
+            let x = payload.get("x").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let y = payload.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let _ = post_click_impl(&state.maa_state, instance_id, x, y);
+        }
+        "swipe" => {
+            let x1 = payload.get("x1").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let y1 = payload.get("y1").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let x2 = payload.get("x2").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let y2 = payload.get("y2").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let duration = payload
+                .get("duration")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(200) as i32;
+            let contact = payload.get("contact").and_then(|v| v.as_i64()).map(|v| v as i32);
+            let pressure = payload.get("pressure").and_then(|v| v.as_i64()).map(|v| v as i32);
+            let _ = post_swipe_impl(
+                &state.maa_state,
+                instance_id,
+                x1,
+                y1,
+                x2,
+                y2,
+                duration,
+                contact,
+                pressure,
+            );
+        }
+        _ => {}
     }
 }
 
@@ -640,7 +808,7 @@ async fn handle_get_maa_state(State(state): State<WebState>) -> impl IntoRespons
             let mut instance_states: HashMap<String, serde_json::Value> = HashMap::new();
 
             for (id, runtime) in instances.iter_mut() {
-                let is_running = runtime.tasker.as_ref().is_some_and(|t| t.running());
+                let is_running = runtime.is_running();
 
                 // 与 state.rs 的 maa_get_all_states 保持一致：清理停止标志
                 if !is_running && runtime.stop_in_progress {
@@ -827,11 +995,16 @@ async fn handle_connect_controller(
         emit_callback_event(&app_handle, msg, detail);
     });
 
-    match connect_controller_impl(state.maa_state, instance_id.clone(), config, on_event).await {
-        Ok(conn_id) => {
-            emit_state_changed(&state.app_handle, &instance_id, "connected");
-            Json(serde_json::json!({ "connId": conn_id })).into_response()
-        }
+    match connect_controller_impl(
+        state.maa_state,
+        instance_id.clone(),
+        config,
+        on_event,
+        Some(state.app_handle.clone()),
+    )
+    .await
+    {
+        Ok(conn_id) => Json(serde_json::json!({ "connId": conn_id })).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": e })),
@@ -925,6 +1098,46 @@ async fn handle_run_task(
     Json(serde_json::json!({ "taskIds": task_ids })).into_response()
 }
 
+async fn handle_query_mumu_status(
+    Json(binding): Json<crate::commands::mumu::MuMuBinding>,
+) -> impl IntoResponse {
+    match crate::commands::mumu::query_mumu_status_impl(&binding).await {
+        Ok(status) => Json(status).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": error })),
+        )
+            .into_response(),
+    }
+}
+
+async fn handle_prepare_mumu(
+    State(state): State<WebState>,
+    axum::extract::Path(instance_id): axum::extract::Path<String>,
+    Json(binding): Json<crate::commands::mumu::MuMuBinding>,
+) -> impl IntoResponse {
+    match crate::commands::mumu::prepare_mumu_impl(&state.maa_state, instance_id, binding).await {
+        Ok(()) => Json(serde_json::json!({ "success": true })).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": error })),
+        ).into_response(),
+    }
+}
+
+async fn handle_cancel_mumu_start(
+    State(state): State<WebState>,
+    axum::extract::Path(instance_id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    match crate::commands::mumu::cancel_mumu_start_impl(&state.maa_state, &instance_id) {
+        Ok(()) => Json(serde_json::json!({ "success": true })).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": error })),
+        ).into_response(),
+    }
+}
+
 /// POST /api/maa/instances/:id/tasks/start 请求体
 #[derive(serde::Deserialize)]
 struct StartTasksRequest {
@@ -942,6 +1155,8 @@ struct StartTasksRequest {
     /// 当前 controller 描述，仅用于遥测埋点
     #[serde(default)]
     controller_info: Option<ControllerInfo>,
+    #[serde(default)]
+    mumu_shutdown_binding: Option<crate::commands::mumu::MuMuBinding>,
 }
 
 /// POST /api/maa/instances/:id/tasks/start
@@ -978,6 +1193,7 @@ async fn handle_start_tasks(
         body.pi_envs,
         body.reset_state.unwrap_or(true),
         body.controller_info,
+        body.mumu_shutdown_binding,
     )
     .await
     {
@@ -1081,6 +1297,180 @@ async fn handle_post_click(
 
     match post_click_impl(&state.maa_state, &instance_id, body.x, body.y) {
         Ok(id) => (StatusCode::OK, Json(serde_json::json!({ "clickId": id }))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e })),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/maa/instances/:id/swipe
+///
+/// Body: `{ "x1": 100, "y1": 200, "x2": 300, "y2": 200, "duration": 200, "contact": 0, "pressure": 1 }`
+#[derive(serde::Deserialize)]
+struct PostSwipeRequest {
+    x1: i32,
+    y1: i32,
+    x2: i32,
+    y2: i32,
+    #[serde(default = "default_swipe_duration")]
+    duration: i32,
+    contact: Option<i32>,
+    pressure: Option<i32>,
+}
+
+fn default_swipe_duration() -> i32 {
+    200
+}
+
+async fn handle_post_swipe(
+    State(state): State<WebState>,
+    axum::extract::Path(instance_id): axum::extract::Path<String>,
+    body: Result<Json<PostSwipeRequest>, axum::extract::rejection::JsonRejection>,
+) -> impl IntoResponse {
+    let body = match body {
+        Ok(Json(b)) => b,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": err.body_text() })),
+            )
+                .into_response();
+        }
+    };
+
+    match post_swipe_impl(
+        &state.maa_state,
+        &instance_id,
+        body.x1,
+        body.y1,
+        body.x2,
+        body.y2,
+        body.duration,
+        body.contact,
+        body.pressure,
+    ) {
+        Ok(id) => (StatusCode::OK, Json(serde_json::json!({ "swipeId": id }))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e })),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/maa/instances/:id/touch/down
+/// POST /api/maa/instances/:id/touch/move
+///
+/// Body: `{ "contact": 0, "x": 100, "y": 200, "pressure": 1 }`
+#[derive(serde::Deserialize)]
+struct PostTouchPointRequest {
+    #[serde(default)]
+    contact: i32,
+    x: i32,
+    y: i32,
+    #[serde(default = "default_touch_pressure")]
+    pressure: i32,
+}
+
+fn default_touch_pressure() -> i32 {
+    1
+}
+
+async fn handle_post_touch_down(
+    State(state): State<WebState>,
+    axum::extract::Path(instance_id): axum::extract::Path<String>,
+    body: Result<Json<PostTouchPointRequest>, axum::extract::rejection::JsonRejection>,
+) -> impl IntoResponse {
+    let body = match body {
+        Ok(Json(b)) => b,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": err.body_text() })),
+            )
+                .into_response();
+        }
+    };
+
+    match post_touch_down_impl(
+        &state.maa_state,
+        &instance_id,
+        body.contact,
+        body.x,
+        body.y,
+        body.pressure,
+    ) {
+        Ok(id) => (StatusCode::OK, Json(serde_json::json!({ "touchId": id }))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e })),
+        )
+            .into_response(),
+    }
+}
+
+async fn handle_post_touch_move(
+    State(state): State<WebState>,
+    axum::extract::Path(instance_id): axum::extract::Path<String>,
+    body: Result<Json<PostTouchPointRequest>, axum::extract::rejection::JsonRejection>,
+) -> impl IntoResponse {
+    let body = match body {
+        Ok(Json(b)) => b,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": err.body_text() })),
+            )
+                .into_response();
+        }
+    };
+
+    match post_touch_move_impl(
+        &state.maa_state,
+        &instance_id,
+        body.contact,
+        body.x,
+        body.y,
+        body.pressure,
+    ) {
+        Ok(id) => (StatusCode::OK, Json(serde_json::json!({ "touchId": id }))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e })),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/maa/instances/:id/touch/up
+///
+/// Body: `{ "contact": 0 }`
+#[derive(serde::Deserialize)]
+struct PostTouchUpRequest {
+    #[serde(default)]
+    contact: i32,
+}
+
+async fn handle_post_touch_up(
+    State(state): State<WebState>,
+    axum::extract::Path(instance_id): axum::extract::Path<String>,
+    body: Result<Json<PostTouchUpRequest>, axum::extract::rejection::JsonRejection>,
+) -> impl IntoResponse {
+    let body = match body {
+        Ok(Json(b)) => b,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": err.body_text() })),
+            )
+                .into_response();
+        }
+    };
+
+    match post_touch_up_impl(&state.maa_state, &instance_id, body.contact) {
+        Ok(id) => (StatusCode::OK, Json(serde_json::json!({ "touchId": id }))).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": e })),
@@ -1364,5 +1754,39 @@ async fn handle_restart_as_admin(State(state): State<WebState>) -> impl IntoResp
             Json(serde_json::json!({ "error": e })),
         )
             .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::{HeaderMap, HeaderValue};
+
+    #[test]
+    fn allows_same_origin_and_reverse_proxied_ws_requests() {
+        // 1. Direct same-origin
+        let mut h1 = HeaderMap::new();
+        h1.insert(header::ORIGIN, HeaderValue::from_static("http://192.168.1.10:12701"));
+        h1.insert(header::HOST, HeaderValue::from_static("192.168.1.10:12701"));
+        assert!(is_allowed_ws_request(&h1));
+
+        // 2. HTTPS reverse proxy with preserved Host (port 443 omitted in Host or Origin)
+        let mut h2 = HeaderMap::new();
+        h2.insert(header::ORIGIN, HeaderValue::from_static("https://mxu.example.com"));
+        h2.insert(header::HOST, HeaderValue::from_static("mxu.example.com:12701"));
+        assert!(is_allowed_ws_request(&h2));
+
+        // 3. Reverse proxy with default proxy_pass http://127.0.0.1:12701 (Host rewritten to loopback)
+        let mut h3 = HeaderMap::new();
+        h3.insert(header::ORIGIN, HeaderValue::from_static("https://mxu.example.com:8443"));
+        h3.insert(header::HOST, HeaderValue::from_static("127.0.0.1:12701"));
+        assert!(is_allowed_ws_request(&h3));
+
+        // 4. Reverse proxy with X-Forwarded-For / X-Forwarded-Proto
+        let mut h4 = HeaderMap::new();
+        h4.insert(header::ORIGIN, HeaderValue::from_static("https://mxu.example.com"));
+        h4.insert(header::HOST, HeaderValue::from_static("backend.internal:12701"));
+        h4.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+        assert!(is_allowed_ws_request(&h4));
     }
 }

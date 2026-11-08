@@ -14,6 +14,7 @@ import { loggers } from '@/utils/logger';
 import { parseJsonc } from '@/utils/jsonc';
 import { isTauri } from '@/utils/paths';
 import { setBackendPort, apiPost } from '@/utils/backendApi';
+import * as wsService from '@/services/wsService';
 
 const log = loggers.app;
 
@@ -629,6 +630,7 @@ export async function autoLoadInterface(): Promise<LoadResult> {
         apiResult = found.result;
         log.info(`探测到后端在端口 ${found.port}`);
         setBackendPort(found.port);
+        wsService.setServerPort(found.port);
       } catch {
         // 所有端口探测均失败
       }

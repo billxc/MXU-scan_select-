@@ -5,6 +5,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import type {
   AdbDevice,
+  MuMuBinding,
+  MuMuStatus,
   Win32Window,
   GamescopeInstance,
   ControllerConfig,
@@ -188,6 +190,44 @@ export const maaService = {
     );
     log.info('版本检查结果:', result);
     return result;
+  },
+
+  async queryMuMuStatus(binding: MuMuBinding): Promise<MuMuStatus> {
+    try {
+      if (isTauri()) {
+        return await invoke<MuMuStatus>('query_mumu_status', { binding });
+      } else {
+        return await apiPost<MuMuStatus>('/maa/mumu/status', binding);
+      }
+    } catch {
+      return {
+        exists: false,
+        is_process_started: false,
+        is_android_started: false,
+      };
+    }
+  },
+
+  async prepareMuMu(instanceId: string, binding: MuMuBinding): Promise<void> {
+    try {
+      if (isTauri()) {
+        await invoke('prepare_mumu', { instanceId, binding });
+      } else {
+        await apiPost(`/maa/instances/${instanceId}/mumu/prepare`, binding);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('MUMU_START_CANCELLED')) throw new Error('MUMU_START_CANCELLED');
+      throw new Error(`${i18n.t('controller.mumu.startFailed')}: ${message}`);
+    }
+  },
+
+  async cancelMuMuStart(instanceId: string): Promise<void> {
+    if (isTauri()) {
+      await invoke('cancel_mumu_start', { instanceId });
+    } else {
+      await apiPost(`/maa/instances/${instanceId}/mumu/cancel`, {});
+    }
   },
 
   /**
@@ -558,6 +598,44 @@ export const maaService = {
   },
 
   /**
+   * 发起实时触控按下/移动/抬起请求（Web 模式下优先走 WebSocket 极速通道，降级走 HTTP API；桌面端走 Tauri invoke）
+   */
+  async postTouch(
+    instanceId: string,
+    action: 'down' | 'move' | 'up',
+    x: number,
+    y: number,
+    contact = 0,
+    pressure = 1,
+  ): Promise<void> {
+    if (!isTauri()) {
+      const { sendWsJson } = await import('./wsService');
+      if (
+        sendWsJson({
+          type: 'touch',
+          payload: { instanceId, action, contact, x, y, pressure },
+        })
+      ) {
+        return;
+      }
+      await apiPost(`/maa/instances/${instanceId}/touch/${action}`, {
+        contact,
+        x,
+        y,
+        pressure,
+      });
+      return;
+    }
+    if (action === 'down') {
+      await invoke('maa_post_touch_down', { instanceId, contact, x, y, pressure });
+    } else if (action === 'move') {
+      await invoke('maa_post_touch_move', { instanceId, contact, x, y, pressure });
+    } else {
+      await invoke('maa_post_touch_up', { instanceId, contact });
+    }
+  },
+
+  /**
    * 发起截图请求（异步，通过回调通知完成状态）
    * @param instanceId 实例 ID
    * @returns 截图请求 ID（Tauri）或 0（浏览器，实际截图异步进行并写入缓存）
@@ -645,6 +723,7 @@ export const maaService = {
     piEnvs?: Record<string, string>,
     controllerInfo?: ControllerTelemetryInfo,
     logRedactSecrets?: string[],
+    mumuShutdownBinding?: MuMuBinding,
   ): Promise<number[]> {
     log.info('启动任务, 实例:', instanceId, ', 任务数:', tasks.length, ', cwd:', cwd || '.');
     tasks.forEach((task, i) => {
@@ -674,6 +753,7 @@ export const maaService = {
           tcp_compat_mode: tcpCompatMode || false,
           pi_envs: agentConfigs && agentConfigs.length > 0 && piEnvs ? piEnvs : null,
           controller_info: controllerInfo ?? null,
+          mumu_shutdown_binding: mumuShutdownBinding ?? null,
         },
       );
       log.info('任务已提交 (HTTP), taskIds:', result.taskIds);
@@ -688,6 +768,7 @@ export const maaService = {
       tcpCompatMode: tcpCompatMode || false,
       piEnvs: hasAgent && piEnvs ? piEnvs : null,
       controllerInfo: controllerInfo ?? null,
+      mumuShutdownBinding: mumuShutdownBinding ?? null,
     });
     log.info('任务已提交, taskIds:', taskIds);
     return taskIds;
