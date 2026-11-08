@@ -4,6 +4,9 @@ import { Provider as TooltipProvider } from '@radix-ui/react-tooltip';
 import App from './App';
 import './i18n';
 import './index.css';
+import { initPwa } from './utils/pwa';
+
+initPwa();
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

@@ -135,6 +135,12 @@ export function applyTheme(mode: ThemeMode, accent: AccentColor): void {
 
   // 应用 CSS 变量
   applyCSSVariables(modeTheme, accentTheme, mode === 'dark');
+
+  // 同步更新 PWA / 移动浏览器状态栏 theme-color
+  const themeColorMetaList = document.querySelectorAll('meta[name="theme-color"]');
+  themeColorMetaList.forEach((meta) => {
+    meta.setAttribute('content', modeTheme.bg.secondary);
+  });
 }
 
 /**
